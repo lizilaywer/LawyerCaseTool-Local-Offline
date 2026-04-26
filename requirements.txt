@@ -1,0 +1,5 @@
+-r requirements-core.txt
+
+# OCR 识别为可选增强能力。
+# 如需完整 OCR 功能，请额外执行：
+#   pip install -r requirements-ocr.txt

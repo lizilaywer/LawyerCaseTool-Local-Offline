@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+.venv-*/
+.venv_winhome/
+.venv-ocr311_windows_backup_*/
+
+# Temporary / runtime directories
+.tmp-*/
+.pytest_cache/
+.qoder/
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PyInstaller
+*.spec
+
+# Project-specific
+backups/
+logs/
+output/
+*.log
+prototypes/
+*.bat
+claude-f523-cwd
+
+# OS
+.DS_Store
+Thumbs.db

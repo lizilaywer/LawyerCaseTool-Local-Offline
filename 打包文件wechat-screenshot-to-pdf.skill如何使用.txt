@@ -1,0 +1,71 @@
+Skill 创建完成。以下是使用说明：                                                                       
+                                                                                          
+  ---
+  如何使用这个 Skill                                                                                     
+                                                                                                         
+  以后只要你在对话中提到"合并微信截图"、"截图生成PDF"等类似需求，Claude 会自动触发这个 skill。           
+                                                                                                         
+  你只需要用自然语言描述需求即可，例如：                                                                 
+                                                                                                         
+  ┌────────────────────────────────────────┬─────────────────────────┐                                   
+  │                  你说                  │          效果           │                                   
+  ├────────────────────────────────────────┼─────────────────────────┤                                   
+  │ "把这些截图合并成PDF"                  │ 默认每页2张，正序排列   │                                   
+  ├────────────────────────────────────────┼─────────────────────────┤                                   
+  │ "每页放3张截图，倒序"                  │ 每页3张，按序号从大到小 │                                   
+  ├────────────────────────────────────────┼─────────────────────────┤                                   
+  │ "把这文件夹的微信截图合成PDF，每页2张" │ 每页2张，正序           │                                   
+  └────────────────────────────────────────┴─────────────────────────┘                                   
+                                                                                                       
+  Skill 文件位置                                                                                         
+                                                                                                       
+  .claude/skills/wechat-screenshot-to-pdf/                                                               
+  ├── SKILL.md                          # Skill 描述和指令                                               
+  └── scripts/merge_screenshots.py      # 核心合并脚本                                                   
+                                                                                                         
+  打包文件：wechat-screenshot-to-pdf.skill（已生成在项目根目录）                                         
+                                                                                                         
+✻ Worked for 3m 37s                                                                                      
+                                                                                                       
+❯ 打包文件：wechat-screenshot-to-pdf.skill  这个如何使用                                                 
+                                                                                                         
+⏺ 这个 .skill 文件是一个打包好的可分发文件，主要用于分享给其他人或安装到其他项目。                       
+                                                                                                         
+  你当前的情况                                                                                           
+   
+  因为 skill 是在你当前项目的 .claude/skills/                                                            
+  目录下创建的，它已经在生效了，你无需再做任何操作。直接对话就能触发。
+                                                                                                         
+  .skill 文件的使用场景                                                                                  
+   
+  场景 1：分享给别人                                                                                     
+                                                            
+  把 wechat-screenshot-to-pdf.skill 文件发给对方，对方放到自己项目的 .claude/skills/ 目录下解压即可：    
+                                                            
+  # 在对方项目根目录执行                                                                                 
+  mkdir -p .claude/skills                                                                                
+  cd .claude/skills                                                                                      
+  unzip /path/to/wechat-screenshot-to-pdf.skill                                                          
+                                                                                                         
+  解压后目录结构为：                                                                                     
+  .claude/skills/wechat-screenshot-to-pdf/                                                               
+  ├── SKILL.md                                                                                           
+  └── scripts/merge_screenshots.py                                                                       
+                                                                                                         
+  Claude Code 下次启动时自动加载。                                                                       
+                                                                                                         
+  场景 2：安装到你的其他项目                                                                             
+                                                                                                         
+  # 在另一个项目根目录执行                                                                               
+  mkdir -p .claude/skills                                                                                
+  unzip /Users/a49144/Desktop/claudecodehub/wechat-screenshot-to-pdf.skill -d .claude/skills/            
+                                                                                                         
+  场景 3：你当前项目可以删掉这个文件                                                                     
+                                                                                                         
+  rm /Users/a49144/Desktop/claudecodehub/wechat-screenshot-to-pdf.skill                                  
+                                                                                                         
+  它只是个打包产物，源文件在 .claude/skills/wechat-screenshot-to-pdf/ 里，删掉不影响使用。               
+                                                                                                         
+  ---                                                                                                    
+  总结：对你来说这个 .skill 文件不用管，skill               
+  已经在当前项目中生效了。它存在的意义是方便你把这个能力复制到别的项目或分享给别人。 

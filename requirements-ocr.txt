@@ -1,0 +1,4 @@
+# OCR 增强依赖
+# RapidOCR 当前在较新的 Python 版本上可用性有限，建议在受支持的解释器中安装。
+rapidocr-onnxruntime>=1.2.3; python_version < "3.13"
+opencv-python>=4.8.0

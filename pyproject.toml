@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "case-folder-manager"
+version = "2.0.0"
+description = "本地案件文件夹管理系统"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "CaseFolderManager"}
+]
+keywords = ["case management", "local-first", "legal", "document", "folder"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Legal Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "PySide6>=6.4.0",
+    "python-docx>=0.8.11",
+    "docxtpl>=0.16.7",
+    "PyMuPDF>=1.23.0",
+    "pypdf>=6.0.0",
+    "pdf2image>=1.16.0",
+    "Pillow>=10.0.0",
+    "openpyxl>=3.1.0",
+    "requests==2.32.5",
+    "id-validator>=1.0.0",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "rapidocr-onnxruntime>=1.2.3; python_version < '3.13'",
+    "opencv-python>=4.8.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pyinstaller>=5.0.0",
+]
+
+[project.scripts]
+case-folder-manager = "src.main:main"
+lawyer-case-tool = "src.main:main"
+
+[project.gui-scripts]
+case-folder-manager-gui = "src.main:main"
+lawyer-case-tool-gui = "src.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

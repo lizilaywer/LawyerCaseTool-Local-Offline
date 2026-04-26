@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>律师案卷自动化生成工具 - 新设计</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        border: 'hsl(var(--border))',
+                        input: 'hsl(var(--input))',
+                        ring: 'hsl(var(--ring))',
+                        background: 'hsl(var(--background))',
+                        foreground: 'hsl(var(--foreground))',
+                        primary: {
+                            DEFAULT: 'hsl(var(--primary))',
+                            foreground: 'hsl(var(--primary-foreground))',
+                        },
+                        secondary: {
+                            DEFAULT: 'hsl(var(--secondary))',
+                            foreground: 'hsl(var(--secondary-foreground))',
+                        },
+                        destructive: {
+                            DEFAULT: 'hsl(var(--destructive))',
+                            foreground: 'hsl(var(--destructive-foreground))',
+                        },
+                        muted: {
+                            DEFAULT: 'hsl(var(--muted))',
+                            foreground: 'hsl(var(--muted-foreground))',
+                        },
+                        accent: {
+                            DEFAULT: 'hsl(var(--accent))',
+                            foreground: 'hsl(var(--accent-foreground))',
+                        },
+                        popover: {
+                            DEFAULT: 'hsl(var(--popover))',
+                            foreground: 'hsl(var(--popover-foreground))',
+                        },
+                        card: {
+                            DEFAULT: 'hsl(var(--card))',
+                            foreground: 'hsl(var(--card-foreground))',
+                        },
+                    },
+                    borderRadius: {
+                        lg: 'var(--radius)',
+                        md: 'calc(var(--radius) - 2px)',
+                        sm: 'calc(var(--radius) - 4px)',
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        :root {
+            --background: 0 0% 100%;
+            --foreground: 222.2 84% 4.9%;
+            --card: 0 0% 100%;
+            --card-foreground: 222.2 84% 4.9%;
+            --popover: 0 0% 100%;
+            --popover-foreground: 222.2 84% 4.9%;
+            --primary: 222.2 47.4% 11.2%;
+            --primary-foreground: 210 40% 98%;
+            --secondary: 210 40% 96.1%;
+            --secondary-foreground: 222.2 47.4% 11.2%;
+            --muted: 210 40% 96.1%;
+            --muted-foreground: 215.4 16.3% 46.9%;
+            --accent: 210 40% 96.1%;
+            --accent-foreground: 222.2 47.4% 11.2%;
+            --destructive: 0 84.2% 60.2%;
+            --destructive-foreground: 210 40% 98%;
+            --border: 214.3 31.8% 91.4%;
+            --input: 214.3 31.8% 91.4%;
+            --ring: 222.2 84% 4.9%;
+            --radius: 0.5rem;
+        }
+        
+        .dark {
+            --background: 222.2 84% 4.9%;
+            --foreground: 210 40% 98%;
+            --card: 222.2 84% 4.9%;
+            --card-foreground: 210 40% 98%;
+            --popover: 222.2 84% 4.9%;
+            --popover-foreground: 210 40% 98%;
+            --primary: 210 40% 98%;
+            --primary-foreground: 222.2 47.4% 11.2%;
+            --secondary: 217.2 32.6% 17.5%;
+            --secondary-foreground: 210 40% 98%;
+            --muted: 217.2 32.6% 17.5%;
+            --muted-foreground: 215 20.2% 65.1%;
+            --accent: 217.2 32.6% 17.5%;
+            --accent-foreground: 210 40% 98%;
+            --destructive: 0 62.8% 30.6%;
+            --destructive-foreground: 210 40% 98%;
+            --border: 217.2 32.6% 17.5%;
+            --input: 217.2 32.6% 17.5%;
+            --ring: 212.7 26.8% 83.9%;
+        }
+
+        .legal-gradient {
+            background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 50%, #1e3a5f 100%);
+        }
+        
+        .gold-accent {
+            color: #d4a853;
+        }
+        
+        .sidebar-item:hover {
+            background: hsl(var(--accent));
+        }
+        
+        .template-card {
+            transition: all 0.2s ease;
+        }
+        
+        .template-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px -10px rgba(0,0,0,0.2);
+        }
+        
+        .input-field {
+            transition: all 0.2s ease;
+        }
+        
+        .input-field:focus {
+            box-shadow: 0 0 0 2px hsl(var(--ring));
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
+            transition: all 0.2s ease;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(30, 58, 95, 0.4);
+        }
+
+        .folder-tree-item {
+            transition: all 0.15s ease;
+        }
+        
+        .folder-tree-item:hover {
+            background: hsl(var(--accent));
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: hsl(var(--muted-foreground) / 0.3);
+            border-radius: 3px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: hsl(var(--muted-foreground) / 0.5);
+        }
+
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+        }
+        
+        .dark .glass-effect {
+            background: rgba(15, 23, 42, 0.8);
+        }
+    </style>
+</head>
+<body class="bg-background text-foreground antialiased">
+    <!-- Title Bar (模拟窗口标题栏) -->
+    <div class="h-10 legal-gradient flex items-center justify-between px-4 select-none draggable">
+        <div class="flex items-center gap-2">
+            <i data-lucide="scale" class="w-5 h-5 text-amber-400"></i>
+            <span class="text-white font-medium text-sm">律师案卷自动化生成工具</span>
+            <span class="text-white/60 text-xs ml-2">v2.0</span>
+        </div>
+        <div class="flex items-center gap-3">
+            <button class="text-white/70 hover:text-white transition-colors" onclick="toggleTheme()">
+                <i data-lucide="moon" class="w-4 h-4"></i>
+            </button>
+            <button class="text-white/70 hover:text-white transition-colors">
+                <i data-lucide="minus" class="w-4 h-4"></i>
+            </button>
+            <button class="text-white/70 hover:text-white transition-colors">
+                <i data-lucide="square" class="w-3.5 h-3.5"></i>
+            </button>
+            <button class="text-white/70 hover:text-red-400 transition-colors">
+                <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+        </div>
+    </div>
+
+    <div class="flex h-[calc(100vh-40px)]">
+        <!-- Sidebar -->
+        <aside class="w-64 border-r bg-card flex flex-col">
+            <!-- Search -->
+            <div class="p-4">
+                <div class="relative">
+                    <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"></i>
+                    <input type="text" 
+                           placeholder="搜索模板或案卷..." 
+                           class="w-full pl-9 pr-4 py-2 bg-secondary rounded-md text-sm border-0 focus:outline-none focus:ring-2 focus:ring-ring"
+                           onclick="showCommandPalette()">
+                    <kbd class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground bg-background px-1.5 py-0.5 rounded">⌘K</kbd>
+                </div>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="flex-1 px-3 space-y-1">
+                <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-2">主要功能</div>
+                
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium bg-primary/10 text-primary">
+                    <i data-lucide="file-plus" class="w-4 h-4"></i>
+                    创建案卷
+                </a>
+                
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground">
+                    <i data-lucide="scan-line" class="w-4 h-4"></i>
+                    信息识别
+                    <span class="ml-auto text-xs bg-amber-500/20 text-amber-600 px-1.5 py-0.5 rounded">OCR</span>
+                </a>
+                
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground">
+                    <i data-lucide="layout-template" class="w-4 h-4"></i>
+                    模板管理
+                </a>
+
+                <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-2 mt-6">最近使用</div>
+                
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground group">
+                    <i data-lucide="folder" class="w-4 h-4 text-blue-500"></i>
+                    <span class="truncate flex-1">(2024)浙01民初123号</span>
+                    <span class="text-xs text-muted-foreground">2h前</span>
+                </a>
+                
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground group">
+                    <i data-lucide="folder" class="w-4 h-4 text-blue-500"></i>
+                    <span class="truncate flex-1">张三诉李四借款纠纷</span>
+                    <span class="text-xs text-muted-foreground">昨天</span>
+                </a>
+
+                <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-2 mt-6">统计</div>
+                
+                <div class="px-3 py-2 space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted-foreground">本月案卷</span>
+                        <span class="font-medium">24</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted-foreground">模板总数</span>
+                        <span class="font-medium">8</span>
+                    </div>
+                </div>
+            </nav>
+
+            <!-- Bottom Actions -->
+            <div class="p-3 border-t space-y-1">
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground">
+                    <i data-lucide="settings" class="w-4 h-4"></i>
+                    设置
+                </a>
+                <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground">
+                    <i data-lucide="help-circle" class="w-4 h-4"></i>
+                    帮助
+                </a>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 flex flex-col min-w-0">
+            <!-- Header -->
+            <header class="h-14 border-b flex items-center justify-between px-6 bg-card/50">
+                <div class="flex items-center gap-4">
+                    <h1 class="text-lg font-semibold">创建案卷</h1>
+                    <div class="h-4 w-px bg-border"></div>
+                    <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                        <span>当前模板:</span>
+                        <button class="flex items-center gap-1 text-foreground hover:text-primary transition-colors font-medium">
+                            民事案件模板(原告)
+                            <i data-lucide="chevron-down" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button class="btn-primary text-white px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2">
+                        <i data-lucide="wand-2" class="w-4 h-4"></i>
+                        生成案卷
+                    </button>
+                </div>
+            </header>
+
+            <!-- Content Area -->
+            <div class="flex-1 overflow-auto p-6">
+                <div class="max-w-6xl mx-auto">
+                    <!-- Template Cards -->
+                    <div class="mb-8">
+                        <div class="flex items-center justify-between mb-4">
+                            <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">选择模板</h2>
+                            <button class="text-sm text-primary hover:underline">管理模板</button>
+                        </div>
+                        <div class="grid grid-cols-4 gap-4">
+                            <!-- Template Card 1 -->
+                            <div class="template-card bg-card border rounded-lg p-4 cursor-pointer ring-2 ring-primary ring-offset-2">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                                        <i data-lucide="user" class="w-5 h-5 text-blue-500"></i>
+                                    </div>
+                                    <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">默认</span>
+                                </div>
+                                <h3 class="font-medium text-sm mb-1">民事案件(原告)</h3>
+                                <p class="text-xs text-muted-foreground line-clamp-2">适用于民事诉讼案件原告方</p>
+                            </div>
+
+                            <!-- Template Card 2 -->
+                            <div class="template-card bg-card border rounded-lg p-4 cursor-pointer hover:border-primary/50">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center">
+                                        <i data-lucide="users" class="w-5 h-5 text-amber-500"></i>
+                                    </div>
+                                </div>
+                                <h3 class="font-medium text-sm mb-1">民事案件(被告)</h3>
+                                <p class="text-xs text-muted-foreground line-clamp-2">适用于民事诉讼案件被告方</p>
+                            </div>
+
+                            <!-- Template Card 3 -->
+                            <div class="template-card bg-card border rounded-lg p-4 cursor-pointer hover:border-primary/50">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center">
+                                        <i data-lucide="gavel" class="w-5 h-5 text-red-500"></i>
+                                    </div>
+                                </div>
+                                <h3 class="font-medium text-sm mb-1">刑事案件</h3>
+                                <p class="text-xs text-muted-foreground line-clamp-2">适用于刑事辩护案件</p>
+                            </div>
+
+                            <!-- Template Card 4 -->
+                            <div class="template-card bg-card border rounded-lg p-4 cursor-pointer hover:border-primary/50">
+                                <div class="flex items-start justify-between mb-3">
+                                    <div class="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
+                                        <i data-lucide="briefcase" class="w-5 h-5 text-green-500"></i>
+                                    </div>
+                                </div>
+                                <h3 class="font-medium text-sm mb-1">劳动仲裁</h3>
+                                <p class="text-xs text-muted-foreground line-clamp-2">适用于劳动争议仲裁案件</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <!-- Left: Form -->
+                        <div class="space-y-6">
+                            <div class="bg-card border rounded-lg p-5">
+                                <h3 class="font-semibold mb-4 flex items-center gap-2">
+                                    <i data-lucide="file-text" class="w-4 h-4 text-muted-foreground"></i>
+                                    案件信息
+                                </h3>
+                                <div class="space-y-4">
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div class="space-y-2">
+                                            <label class="text-sm font-medium">案号</label>
+                                            <input type="text" 
+                                                   value="(2024)浙01民初123号"
+                                                   class="input-field w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary"
+                                                   placeholder="请输入案号">
+                                        </div>
+                                        <div class="space-y-2">
+                                            <label class="text-sm font-medium">案由</label>
+                                            <input type="text" 
+                                                   value="民间借贷纠纷"
+                                                   class="input-field w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary"
+                                                   placeholder="请输入案由">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="space-y-2">
+                                        <label class="text-sm font-medium">法院名称</label>
+                                        <input type="text" 
+                                               value="浙江省杭州市中级人民法院"
+                                               class="input-field w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary">
+                                    </div>
+
+                                    <div class="space-y-2">
+                                        <div class="flex items-center justify-between">
+                                            <label class="text-sm font-medium">办理阶段</label>
+                                            <span class="text-xs text-muted-foreground">可选</span>
+                                        </div>
+                                        <select class="w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary">
+                                            <option>一审阶段</option>
+                                            <option>二审阶段</option>
+                                            <option>执行阶段</option>
+                                            <option>再审阶段</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="bg-card border rounded-lg p-5">
+                                <h3 class="font-semibold mb-4 flex items-center gap-2">
+                                    <i data-lucide="user" class="w-4 h-4 text-muted-foreground"></i>
+                                    当事人信息
+                                </h3>
+                                <div class="space-y-4">
+                                    <div class="space-y-2">
+                                        <label class="text-sm font-medium">委托人姓名</label>
+                                        <div class="flex gap-2">
+                                            <input type="text" 
+                                                   value="张三"
+                                                   class="input-field flex-1 px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary">
+                                            <button class="px-3 py-2 border rounded-md hover:bg-accent transition-colors" title="从OCR识别">
+                                                <i data-lucide="scan-line" class="w-4 h-4 text-muted-foreground"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div class="space-y-2">
+                                            <label class="text-sm font-medium">性别</label>
+                                            <select class="w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary">
+                                                <option>男</option>
+                                                <option>女</option>
+                                            </select>
+                                        </div>
+                                        <div class="space-y-2">
+                                            <label class="text-sm font-medium">联系电话</label>
+                                            <input type="text" 
+                                                   class="input-field w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary"
+                                                   placeholder="138****8888">
+                                        </div>
+                                    </div>
+
+                                    <div class="space-y-2">
+                                        <label class="text-sm font-medium">对方当事人</label>
+                                        <input type="text" 
+                                               value="李四"
+                                               class="input-field w-full px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right: Preview -->
+                        <div class="space-y-6">
+                            <div class="bg-card border rounded-lg p-5">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h3 class="font-semibold flex items-center gap-2">
+                                        <i data-lucide="folder-tree" class="w-4 h-4 text-muted-foreground"></i>
+                                        案卷结构预览
+                                    </h3>
+                                    <div class="flex items-center gap-2">
+                                        <button class="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1">
+                                            <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+                                            刷新
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <div class="bg-background border rounded-md p-4 space-y-1 max-h-80 overflow-auto">
+                                    <!-- Root Folder -->
+                                    <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                        <i data-lucide="chevron-down" class="w-4 h-4 text-muted-foreground"></i>
+                                        <i data-lucide="folder-open" class="w-4 h-4 text-blue-500"></i>
+                                        <span class="text-sm font-medium">(2024)浙01民初123号_张三</span>
+                                    </div>
+                                    
+                                    <!-- Level 1 -->
+                                    <div class="ml-4 space-y-1">
+                                        <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                            <i data-lucide="chevron-down" class="w-4 h-4 text-muted-foreground"></i>
+                                            <i data-lucide="folder-open" class="w-4 h-4 text-amber-500"></i>
+                                            <span class="text-sm">0委托手续</span>
+                                        </div>
+                                        
+                                        <div class="ml-4 space-y-1">
+                                            <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                                <i data-lucide="file-text" class="w-4 h-4 text-blue-400"></i>
+                                                <span class="text-sm">委托合同.docx</span>
+                                            </div>
+                                            <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                                <i data-lucide="file-text" class="w-4 h-4 text-blue-400"></i>
+                                                <span class="text-sm">授权委托书.docx</span>
+                                            </div>
+                                            <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                                <i data-lucide="file-text" class="w-4 h-4 text-blue-400"></i>
+                                                <span class="text-sm">所函.docx</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-muted-foreground"></i>
+                                            <i data-lucide="folder" class="w-4 h-4 text-amber-500"></i>
+                                            <span class="text-sm">1起诉材料</span>
+                                        </div>
+                                        
+                                        <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-muted-foreground"></i>
+                                            <i data-lucide="folder" class="w-4 h-4 text-amber-500"></i>
+                                            <span class="text-sm">2证据材料</span>
+                                        </div>
+                                        
+                                        <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-muted-foreground"></i>
+                                            <i data-lucide="folder" class="w-4 h-4 text-amber-500"></i>
+                                            <span class="text-sm">3庭审材料</span>
+                                        </div>
+                                        
+                                        <div class="folder-tree-item flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer">
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-muted-foreground"></i>
+                                            <i data-lucide="folder" class="w-4 h-4 text-amber-500"></i>
+                                            <span class="text-sm">4裁判文书</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Output Settings -->
+                            <div class="bg-card border rounded-lg p-5">
+                                <h3 class="font-semibold mb-4 flex items-center gap-2">
+                                    <i data-lucide="settings-2" class="w-4 h-4 text-muted-foreground"></i>
+                                    输出设置
+                                </h3>
+                                <div class="space-y-4">
+                                    <div class="space-y-2">
+                                        <label class="text-sm font-medium">输出目录</label>
+                                        <div class="flex gap-2">
+                                            <input type="text" 
+                                                   value="C:\Users\Lawyer\案卷\2024"
+                                                   class="input-field flex-1 px-3 py-2 bg-background border rounded-md text-sm focus:outline-none focus:border-primary">
+                                            <button class="px-3 py-2 border rounded-md hover:bg-accent transition-colors text-sm">
+                                                浏览
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="flex items-center gap-3">
+                                        <input type="checkbox" id="open-folder" class="rounded border-gray-300" checked>
+                                        <label for="open-folder" class="text-sm">生成后打开文件夹</label>
+                                    </div>
+                                    
+                                    <div class="flex items-center gap-3">
+                                        <input type="checkbox" id="create-readme" class="rounded border-gray-300">
+                                        <label for="create-readme" class="text-sm">生成目录说明文件</label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Command Palette (Hidden by default) -->
+    <div id="command-palette" class="fixed inset-0 z-50 hidden items-start justify-center pt-[20vh]">
+        <div class="absolute inset-0 bg-black/50" onclick="hideCommandPalette()"></div>
+        <div class="relative w-full max-w-2xl bg-card border rounded-lg shadow-2xl overflow-hidden">
+            <div class="flex items-center gap-3 px-4 py-3 border-b">
+                <i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i>
+                <input type="text" 
+                       placeholder="搜索模板、案卷、设置..."
+                       class="flex-1 bg-transparent border-0 focus:outline-none text-lg"
+                       autofocus>
+                <kbd class="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">ESC</kbd>
+            </div>
+            <div class="p-2">
+                <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-2">最近使用</div>
+                <button class="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent text-left">
+                    <i data-lucide="folder" class="w-4 h-4 text-blue-500"></i>
+                    <span class="flex-1">(2024)浙01民初123号</span>
+                    <span class="text-xs text-muted-foreground">案卷</span>
+                </button>
+                <button class="w-full flex items-center gap-3 px-3 py-2 rounded-md hover:bg-accent text-left">
+                    <i data-lucide="layout-template" class="w-4 h-4 text-amber-500"></i>
+                    <span class="flex-1">民事案件模板(原告)</span>
+                    <span class="text-xs text-muted-foreground">模板</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // Theme toggle
+        function toggleTheme() {
+            const html = document.documentElement;
+            if (html.classList.contains('dark')) {
+                html.classList.remove('dark');
+                html.classList.add('light');
+            } else {
+                html.classList.remove('light');
+                html.classList.add('dark');
+            }
+            lucide.createIcons();
+        }
+
+        // Command palette
+        function showCommandPalette() {
+            const palette = document.getElementById('command-palette');
+            palette.classList.remove('hidden');
+            palette.classList.add('flex');
+            setTimeout(() => palette.querySelector('input').focus(), 100);
+        }
+
+        function hideCommandPalette() {
+            const palette = document.getElementById('command-palette');
+            palette.classList.add('hidden');
+            palette.classList.remove('flex');
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Command/Ctrl + K
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                showCommandPalette();
+            }
+            // ESC
+            if (e.key === 'Escape') {
+                hideCommandPalette();
+            }
+        });
+
+        // Template card selection
+        document.querySelectorAll('.template-card').forEach(card => {
+            card.addEventListener('click', function() {
+                document.querySelectorAll('.template-card').forEach(c => {
+                    c.classList.remove('ring-2', 'ring-primary', 'ring-offset-2');
+                });
+                this.classList.add('ring-2', 'ring-primary', 'ring-offset-2');
+            });
+        });
+
+        // Folder tree toggle
+        document.querySelectorAll('.folder-tree-item').forEach(item => {
+            const chevron = item.querySelector('[data-lucide="chevron-down"], [data-lucide="chevron-right"]');
+            if (chevron) {
+                item.addEventListener('click', function(e) {
+                    if (e.target === chevron || e.target.closest('svg') === chevron) {
+                        e.stopPropagation();
+                        const iconName = chevron.getAttribute('data-lucide');
+                        if (iconName === 'chevron-down') {
+                            chevron.setAttribute('data-lucide', 'chevron-right');
+                        } else {
+                            chevron.setAttribute('data-lucide', 'chevron-down');
+                        }
+                        lucide.createIcons();
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
