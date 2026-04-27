@@ -1538,8 +1538,8 @@ class MainWindow(QMainWindow):
         self._on_manage_templates(template_id)
 
     def _on_add_template(self) -> None:
-        """添加模板"""
-        self._on_manage_templates()
+        """新建模板 — 打开电子模板制作器"""
+        self._on_template_maker()
 
     def _on_manage_templates(self, select_id: str = None) -> None:
         """管理模板"""
