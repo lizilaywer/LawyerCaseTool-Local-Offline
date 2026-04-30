@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "case-folder-manager"
-version = "2.0.0"
+version = "2.1.0"
 description = "本地案件文件夹管理系统"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "CaseFolderManager"}
+    {name = "汪立", email = "491445490@qq.com"}
 ]
 keywords = ["case management", "local-first", "legal", "document", "folder"]
 classifiers = [

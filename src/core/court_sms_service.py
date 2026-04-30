@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -319,6 +319,7 @@ class CourtSmsHearingNotice:
     notice_type: str = ""
     case_number: str = ""
     cause: str = ""
+    summoned_person: str = ""
     hearing_date: str = ""
     hearing_time: str = ""
     hearing_place: str = ""
@@ -428,7 +429,7 @@ class CourtSmsService:
         headers = {
             "Content-Type": "application/json;charset=UTF-8",
             "Referer": f"{parsed.host}/zxfw/",
-            "User-Agent": "CaseFolderManager/1.0",
+            "User-Agent": "LEXORA/1.0",
         }
 
         response = self._session.post(url, json=payload, headers=headers, timeout=timeout)
@@ -508,7 +509,7 @@ class CourtSmsService:
         target_path = _ensure_unique_path(_resolve_child_path(session_dir, session_dir / safe_name))
         headers = {
             "Referer": f"{parsed.host}/zxfw/",
-            "User-Agent": "CaseFolderManager/1.0",
+            "User-Agent": "LEXORA/1.0",
         }
         with self._session.get(
             document.download_url, headers=headers, stream=True, timeout=timeout
@@ -678,6 +679,192 @@ class CourtSmsService:
             self._logger.warning(f"PDF 文本提取未成功，已跳过不稳定的回退路径: {path}")
         return ""
 
+    def extract_text_from_file(self, file_path: str) -> str:
+        """从 PDF 或图片文件提取文本。
+
+        - PDF：优先 pypdf 文本提取，失败后尝试 OCR 回退
+        - 图片 (jpg/png/bmp)：使用 RapidOCR 识别
+        """
+        path = Path(str(file_path or "").strip())
+        if not path.exists() or not path.is_file():
+            return ""
+
+        ext = path.suffix.lower()
+
+        # PDF：先尝试文本提取
+        if ext == ".pdf":
+            text = self.extract_pdf_text(str(path), allow_pymupdf_fallback=True)
+            if text.strip():
+                return text
+            # 文本提取为空（扫描件），尝试 OCR 回退
+            return self._ocr_pdf_pages(path)
+
+        # 图片：直接 OCR
+        if ext in (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"):
+            return self._ocr_image(str(path))
+
+        return ""
+
+    def _ocr_image(self, image_path: str) -> str:
+        """使用 RapidOCR 识别单张图片。"""
+        try:
+            from src.core.ocr.paddle_engine import get_ocr_engine
+            engine = get_ocr_engine()
+            if not engine.is_ready():
+                self._logger.warning(f"OCR 引擎未就绪，无法识别图片: {image_path}")
+                return ""
+            results = engine.recognize(image_path)
+            return "\n".join(block.text for block in results if block.text)
+        except Exception as exc:
+            self._logger.warning(f"OCR 识别图片失败: {image_path} | {exc}")
+            return ""
+
+    def _ocr_pdf_pages(self, pdf_path: Path) -> str:
+        """将 PDF 页面渲染为图片后逐页 OCR。"""
+        if fitz is None:
+            return ""
+        try:
+            from src.core.ocr.paddle_engine import get_ocr_engine
+            engine = get_ocr_engine()
+            if not engine.is_ready():
+                return ""
+            import tempfile
+            texts = []
+            doc = fitz.open(str(pdf_path))
+            for page in doc:
+                pix = page.get_pixmap(dpi=200)
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    tmp = f.name
+                pix.save(tmp)
+                try:
+                    results = engine.recognize(tmp)
+                    page_text = "\n".join(block.text for block in results if block.text)
+                    if page_text:
+                        texts.append(page_text)
+                finally:
+                    Path(tmp).unlink(missing_ok=True)
+            doc.close()
+            return "\n".join(texts)
+        except Exception as exc:
+            self._logger.warning(f"PDF OCR 回退失败: {pdf_path} | {exc}")
+            return ""
+
+    def _fallback_extract_datetime_from_ocr(self, compact: str) -> tuple[str, str]:
+        """OCR 分散文本回退：将分散的年月和日时拼合。
+
+        OCR 传票常见格式：
+        "2026年05月...09日09:00" 或 "2026年5月9日9时0分"
+        """
+        # 模式1: "年XX月" 和 "XX日XX:XX" 分散
+        m1 = re.search(r"(\d{4})年(\d{1,2})月", compact)
+        m2 = re.search(r"(\d{1,2})日(\d{1,2}):(\d{2})", compact)
+        if m1 and m2:
+            y, mo = int(m1.group(1)), int(m1.group(2))
+            d, h, mi = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+            return f"{y:04d}-{mo:02d}-{d:02d}", f"{h:02d}:{mi:02d}"
+
+        # 模式2: "年XX月XX日XX时XX分" 连续
+        m3 = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日(\d{1,2})[时:](\d{1,2})[分:]?", compact)
+        if m3:
+            y, mo, d = int(m3.group(1)), int(m3.group(2)), int(m3.group(3))
+            h, mi = int(m3.group(4)), int(m3.group(5))
+            return f"{y:04d}-{mo:02d}-{d:02d}", f"{h:02d}:{mi:02d}"
+
+        # 模式3: 只有 "年XX月XX日"
+        m4 = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", compact)
+        if m4:
+            y, mo, d = int(m4.group(1)), int(m4.group(2)), int(m4.group(3))
+            return f"{y:04d}-{mo:02d}-{d:02d}", ""
+
+        return "", ""
+
+    def _extract_summoned_person(self, compact: str, raw_text: str) -> str:
+        """提取被传唤人/被通知人姓名。
+
+        PDF 文本格式：'被传唤人姓名王海生单位或住址...'
+        OCR 图片格式：'被传唤人' '安徽象山文化' '单位或' '旅游发展有限' 分散多行
+        """
+        # 模式1: "姓名" 后跟姓名（PDF 紧凑格式）
+        # compact 中 "姓名王海生单位或" → 提取 "王海生"
+        m = re.search(r"姓名([\u4e00-\u9fff·]{2,10}?)(?:单位|住址|被传事由|应到)", compact)
+        if m:
+            val = m.group(1)
+            # 排除把标签后面的内容误匹配（如 "姓名住址公司会象山小学被传事由"）
+            _BAD_STARTS = ("住址", "单位", "公司", "被传")
+            if not any(val.startswith(b) for b in _BAD_STARTS):
+                return val
+
+        # 模式3: OCR 场景 — 尝试拼合公司名称碎片
+        # OCR 传票表格中，公司名碎片分散在多行，但公司后缀完整存在于某行
+        lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+        _COMPANY_SUFFIXES = ("有限公司", "有限责任公司", "股份有限公司", "合伙企业")
+        _COMPANY_PARTS = ("有限公司", "有限", "股份", "合伙")
+        _NOISE = {"被传唤人", "被通知人", "单位或", "姓名", "住址", "公司",
+                   "被传事由", "应到时间", "应到处所", "注意事项", "签发人",
+                   "1、", "2、", "3、", "4、"}
+
+        # 策略A: 找包含公司后缀关键词的碎片，向前回溯拼合完整公司名
+        for i, line in enumerate(lines):
+            if line in _NOISE:
+                continue
+            has_company_hint = any(part in line for part in _COMPANY_PARTS) and len(line) >= 3
+            if not has_company_hint:
+                continue
+            # 从此行向前收集碎片，跳过标签行不停
+            parts = [line]
+            _HARD_STOP = {"案号", "案由", "传票", "人民法院"}
+            for j in range(i - 1, max(i - 10, -1), -1):
+                prev = lines[j].strip()
+                if any(prev.startswith(s) or prev == s for s in _HARD_STOP):
+                    break
+                # 地址碎片跳过（以省/市开头或以地址后缀结尾）
+                if re.search(r"^[省市区县镇]|^[安徽北京天津上海重庆].*[市区县]$", prev):
+                    continue
+                if re.search(r"[省市区县镇路街号幢室栋座里村]$", prev) and len(prev) > 3:
+                    continue
+                # 标签行跳过不停
+                if prev in _NOISE:
+                    continue
+                parts.insert(0, prev)
+            combined = "".join(parts)
+            for s in ("有限公司", "有限责任公司", "股份有限公司"):
+                if s in combined:
+                    idx = combined.index(s) + len(s)
+                    return combined[:idx]
+            if "公司" in combined:
+                idx = combined.index("公司") + 2
+                return combined[:idx]
+            # "有限" 但没有 "公司" → 拼合 + "公司"
+            if "有限" in combined:
+                return combined + "公司"
+
+        # 策略B: 没有公司后缀时，从 "案由" 到 "被传事由" 之间取第一个纯中文碎片
+        cause_idx = -1
+        stop_idx = -1
+        for i, line in enumerate(lines):
+            if line.startswith("案由") or line == "案由":
+                cause_idx = i
+            if line in _NOISE or any(line.startswith(w) for w in _NOISE):
+                if cause_idx >= 0 and stop_idx < 0:
+                    stop_idx = i
+                    break
+
+        if cause_idx >= 0 and stop_idx > cause_idx:
+            region = lines[cause_idx + 1:stop_idx]
+            _LABELS = {"被传唤人", "被通知人", "单位或", "姓名", "住址"}
+            fragments = [l for l in region if l not in _LABELS]
+            # 自然人姓名：第一个纯中文 2-6 字碎片
+            for frag in fragments:
+                if 2 <= len(frag) <= 6 and all('\u4e00' <= c <= '\u9fff' or c == '·' for c in frag):
+                    return frag
+
+        # 模式4: 从传票标题中提取（如 "传票（王海生）"）
+        m = re.search(r"传票[（(]([^)）]{2,20})[)）]", compact)
+        if m:
+            return m.group(1)
+
+        return ""
+
     def parse_hearing_notice_text(
         self,
         document: CourtSmsDocument,
@@ -711,8 +898,13 @@ class CourtSmsService:
             ("案由", "事由"),
             ("被传唤人", "被通知人", "被传事由", "开庭时间", "出庭时间", "应到时间", "应到处所", "开庭地点"),
         )
+        if cause:
+            # OCR 场景：案由值可能夹带后面表格内容，截取到"XX纠纷"为止
+            cause_cut = re.search(r"([\u4e00-\u9fff]{2,20}纠纷)", cause)
+            if cause_cut:
+                cause = cause_cut.group(1)
         if not cause:
-            cause_match = re.search(r"([\u4e00-\u9fff]{2,20}纠纷)一案", compact)
+            cause_match = re.search(r"([\u4e00-\u9fff]{2,20}纠纷)", compact)
             if cause_match:
                 cause = cause_match.group(1)
 
@@ -723,6 +915,10 @@ class CourtSmsService:
             max_chars=48,
         )
         hearing_date, hearing_time = _parse_notice_datetime(datetime_text)
+
+        # OCR 回退：标签和值分散时，直接从全文匹配日期时间
+        if not hearing_date:
+            hearing_date, hearing_time = self._fallback_extract_datetime_from_ocr(compact)
         if not hearing_date:
             return None
 
@@ -732,6 +928,12 @@ class CourtSmsService:
             ("注意事项", "签发人", "承办人", "书记员", "联系人", "本院地址", "联系电话"),
             max_chars=60,
         )
+        # OCR 场景：地点值可能夹带日期时间等，截取纯文字部分
+        if hearing_place:
+            hearing_place = re.sub(r"\d{1,4}年\d{1,2}月\d{1,2}日.*", "", hearing_place)
+            hearing_place = re.sub(r"\d{1,2}日\d{1,2}[时:].*", "", hearing_place)
+            hearing_place = re.sub(r"\d[、.].*", "", hearing_place)
+            hearing_place = hearing_place.strip("：:，,。；;、 ")
         signer = _extract_labeled_value(
             compact,
             ("签发人", "承办人", "审判员", "审判长"),
@@ -746,6 +948,14 @@ class CourtSmsService:
         )
         phone_match = re.search(r"(?<!\d)(\d{3,4}-\d{7,8}|\d{11})(?!\d)", compact)
         court_name = document.court_name or fallback_court_name
+        # OCR 回退：从全文匹配法院名
+        if not court_name:
+            court_match = re.search(r"([\u4e00-\u9fff]{2,15}人民法院)", compact)
+            if court_match:
+                court_name = court_match.group(1)
+
+        # 提取被传唤人/被通知人姓名
+        summoned_person = self._extract_summoned_person(compact, text)
 
         return CourtSmsHearingNotice(
             document_name=document_name,
@@ -753,6 +963,7 @@ class CourtSmsService:
             notice_type=notice_type,
             case_number=case_number,
             cause=cause,
+            summoned_person=summoned_person,
             hearing_date=hearing_date,
             hearing_time=hearing_time,
             hearing_place=hearing_place,
@@ -769,21 +980,23 @@ class CourtSmsService:
         document: CourtSmsDocument,
         parsed: Optional[CourtSmsParseResult] = None,
     ) -> Optional[CourtSmsHearingNotice]:
-        """从单份法院文书中识别庭审信息。"""
-        if str(document.extname or "").lower() != "pdf":
+        """从单份法院文书（PDF 或图片）中识别庭审信息。"""
+        ext = str(document.extname or "").lower()
+        local_path = str(document.local_path or "").strip()
+
+        # 支持的文件类型
+        if ext == "pdf":
+            source_text = self.extract_pdf_text(local_path, allow_pymupdf_fallback=True)
+        elif ext in ("jpg", "jpeg", "png", "bmp", "tiff", "tif"):
+            source_text = self.extract_text_from_file(local_path)
+        else:
             return None
+
+        # 如果文件名不含关键词，检查文本内容
         if not any(keyword in str(document.name or "") for keyword in _HEARING_DOC_KEYWORDS):
-            source_text = self.extract_pdf_text(str(document.local_path or "").strip())
             if not any(keyword in _compact_text(source_text) for keyword in _HEARING_DOC_KEYWORDS):
                 return None
-            return self.parse_hearing_notice_text(
-                document,
-                source_text,
-                fallback_case_number=parsed.case_number if parsed else "",
-                fallback_court_name=parsed.court_name if parsed else "",
-            )
 
-        source_text = self.extract_pdf_text(str(document.local_path or "").strip())
         return self.parse_hearing_notice_text(
             document,
             source_text,
@@ -818,6 +1031,45 @@ class CourtSmsService:
         notices.sort(key=lambda item: (item.hearing_date, item.hearing_time or "99:99", item.document_name))
         return notices
 
+    def extract_text_and_hearing_notices_from_files(
+        self,
+        file_paths: List[str],
+    ) -> Tuple[List[CourtSmsDocument], List[CourtSmsHearingNotice]]:
+        """从本地文件（PDF/图片）提取文本并识别庭审信息。
+
+        Returns:
+            (documents, hearing_notices) 元组
+        """
+        documents: List[CourtSmsDocument] = []
+        hearing_notices: List[CourtSmsHearingNotice] = []
+
+        for fp in file_paths:
+            path = Path(fp)
+            if not path.exists():
+                continue
+
+            ext = path.suffix.lstrip(".").lower()
+            doc = CourtSmsDocument(
+                name=path.name,
+                extname=ext,
+                download_url="",
+                local_path=str(path),
+                size_bytes=path.stat().st_size,
+            )
+            documents.append(doc)
+
+            try:
+                notice = self.extract_hearing_notice(doc)
+                if notice:
+                    hearing_notices.append(notice)
+            except Exception as exc:
+                self._logger.warning(f"识别庭审信息失败: {path.name} | {exc}")
+
+        hearing_notices.sort(
+            key=lambda item: (item.hearing_date, item.hearing_time or "99:99", item.document_name)
+        )
+        return documents, hearing_notices
+
     def build_deadline_from_hearing_notice(self, notice: CourtSmsHearingNotice) -> Dict[str, Any]:
         """把识别出的庭审文书转换为案件期限数据。"""
         title = "开庭安排"
@@ -833,6 +1085,8 @@ class CourtSmsService:
             description_lines.append(f"来源文书：{notice.document_name}")
         if notice.case_number:
             description_lines.append(f"案号：{notice.case_number}")
+        if notice.summoned_person:
+            description_lines.append(f"被传唤人：{notice.summoned_person}")
         if notice.court_name:
             description_lines.append(f"法院：{notice.court_name}")
         if notice.hearing_place:

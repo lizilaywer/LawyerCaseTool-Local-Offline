@@ -789,6 +789,9 @@ class CaseDetailPanel(QWidget):
     open_file_requested = Signal(Path)
     relink_folder_requested = Signal(str)
     case_refreshed = Signal(str)
+    preview_fullscreen_toggled = Signal(bool)
+    view_calendar_requested = Signal()
+    tool_center_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -815,6 +818,7 @@ class CaseDetailPanel(QWidget):
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
+        self._is_preview_fullscreen = False
         self._setup_ui()
         self.clear()
 
@@ -827,7 +831,7 @@ class CaseDetailPanel(QWidget):
         container = QWidget()
         container.setStyleSheet(f"background: {c['surface_1']};")
         container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(16, 12, 16, 16)
+        container_layout.setContentsMargins(8, 12, 8, 16)
         container_layout.setSpacing(7)
 
         self._header = QFrame()
@@ -964,16 +968,72 @@ class CaseDetailPanel(QWidget):
         self._deadline_tab_has_pending = False
         self._notes_tab_index = self._tabs.indexOf(self._notes_tab)
         self._tabs.currentChanged.connect(self._refresh_tab_text_colors)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         self._refresh_tab_text_colors()
         container_layout.addWidget(self._tabs, 1)
 
         main_layout.addWidget(container)
 
+    def _toggle_preview_fullscreen(self) -> None:
+        """切换文件预览全屏模式。"""
+        self._is_preview_fullscreen = not self._is_preview_fullscreen
+
+        if self._is_preview_fullscreen:
+            self._header.setVisible(False)
+            self._tabs.tabBar().setVisible(False)
+        else:
+            self._header.setVisible(True)
+            self._tabs.tabBar().setVisible(True)
+
+        if hasattr(self, "_btn_fullscreen"):
+            self._btn_fullscreen.setText("↘↙" if self._is_preview_fullscreen else "⛶")
+            self._btn_fullscreen.setToolTip("退出全屏" if self._is_preview_fullscreen else "全屏预览")
+
+        self.preview_fullscreen_toggled.emit(self._is_preview_fullscreen)
+
+    def _on_tab_changed(self, index: int) -> None:
+        """切换 Tab 时，若离开文件页且处于全屏，自动退出。"""
+        if self._is_preview_fullscreen and index != self._tabs.indexOf(self._files_tab):
+            self._toggle_preview_fullscreen()
+
+    def _on_add_to_notes(self, text: str) -> None:
+        """将选中的 Word 文档文字追加到案件笔记末尾。"""
+        if not text.strip() or self._notes_tab_index < 0:
+            return
+
+        # 切换到笔记 Tab
+        self._tabs.setCurrentIndex(self._notes_tab_index)
+
+        # 进入编辑模式（如果不在编辑模式）
+        if not self._notes_editing:
+            self._enter_notes_edit_mode()
+
+        # 根据单栏/双栏模式选择编辑器
+        if self._notes_split_mode:
+            editor = self._primary_split_notes._editor
+        else:
+            editor = self._notes_editor
+
+        # 移动光标到末尾
+        cursor = editor.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        editor.setTextCursor(cursor)
+
+        # 如果已有内容且末尾没有换行，先插入换行
+        current_text = editor.toPlainText()
+        if current_text and not current_text.endswith("\n"):
+            editor.insertPlainText("\n")
+
+        # 插入选中的文本（另起一行）
+        editor.insertPlainText(text.strip())
+        editor.insertPlainText("\n")
+        editor.ensureCursorVisible()
+
     def _create_files_tab(self) -> QWidget:
         c = COLORS
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(12, 7, 12, 12)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         header = QHBoxLayout()
@@ -1009,6 +1069,29 @@ class CaseDetailPanel(QWidget):
         self._file_actions_group, file_actions_layout = self._create_toolbar_group("fileActionsGroup")
         file_actions_layout.addWidget(self._btn_toggle_tree)
         header.addWidget(self._file_actions_group, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._btn_fullscreen = QPushButton("⛶")
+        self._btn_fullscreen.setFixedSize(28, 28)
+        self._btn_fullscreen.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_fullscreen.setToolTip("全屏预览")
+        self._btn_fullscreen.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {c['text_muted']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                font-size: 12px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: {c['surface_2']};
+                color: {c['text_primary']};
+                border-color: {c['border_strong']};
+            }}
+        """)
+        self._btn_fullscreen.clicked.connect(self._toggle_preview_fullscreen)
+        header.addWidget(self._btn_fullscreen)
+
         layout.addLayout(header)
 
         self._file_warning_label = QLabel("")
@@ -1047,6 +1130,7 @@ class CaseDetailPanel(QWidget):
         self._preview = ArchivePreview()
         self._preview.set_save_actions_enabled(False)
         self._preview.set_empty_hint_text("单击左侧文件立即预览，双击或回车用系统程序打开。")
+        self._preview.add_to_notes_requested.connect(self._on_add_to_notes)
         splitter.addWidget(self._preview)
 
         splitter.setStretchFactor(0, 0)
@@ -1059,7 +1143,7 @@ class CaseDetailPanel(QWidget):
         c = COLORS
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(12, 7, 12, 12)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         header = QHBoxLayout()
@@ -1128,7 +1212,7 @@ class CaseDetailPanel(QWidget):
         tab = QWidget()
         self._notes_tab = tab
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(12, 7, 12, 12)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         header = QHBoxLayout()
@@ -1301,7 +1385,7 @@ class CaseDetailPanel(QWidget):
         tab = QWidget()
         self._info_tab = tab
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(12, 7, 12, 12)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         header = QHBoxLayout()
@@ -2136,6 +2220,11 @@ class CaseDetailPanel(QWidget):
 
         data = dialog.get_deadline_data()
         if not data:
+            return
+
+        if data.get("deleted"):
+            get_case_manager().remove_deadline(self._case_id, deadline_id)
+            self._refresh_case_from_store()
             return
 
         get_case_manager().update_deadline(self._case_id, deadline_id, data)
@@ -3356,68 +3445,10 @@ class CaseDetailPanel(QWidget):
         QMessageBox.warning(self, "OCR识别失败", f"无法识别截图内容：\n{error}")
 
     def _on_tool_center(self) -> None:
-        from src.gui.tool_center_dialog import ToolCenterDialog
-
-        dialog = ToolCenterDialog(self, initial_case_id=getattr(self, "_case_id", ""))
-        pending_navigation: Dict[str, str] = {}
-        dialog.navigate_to_case_requested.connect(
-            lambda case_id: pending_navigation.update({
-                "target": "case",
-                "case_id": case_id,
-            })
-        )
-        dialog.navigate_to_calendar_requested.connect(
-            lambda date_text: pending_navigation.update({
-                "target": "calendar",
-                "date": date_text,
-            })
-        )
-        dialog.exec()
-        owner = self._find_case_manager_dialog()
-        if pending_navigation.get("target") == "case":
-            if owner is not None:
-                owner.open_case_deadline_from_calendar(pending_navigation.get("case_id", ""), "")
-            else:
-                self._refresh_case_from_store()
-            return
-        if pending_navigation.get("target") == "calendar":
-            self._open_calendar_dialog(
-                pending_navigation.get("date", ""),
-                detail_mode="all",
-            )
-            return
+        self.tool_center_requested.emit()
 
     def _on_view_calendar(self) -> None:
-        self._open_calendar_dialog()
-
-    def _open_calendar_dialog(self, date_text: str = "", *, detail_mode: str = "day") -> None:
-        from src.gui.calendar_dialog import CalendarDialog
-
-        dialog = CalendarDialog(self)
-        if date_text:
-            dialog.focus_date_text(date_text, detail_mode=detail_mode)
-        pending_navigation: Dict[str, str] = {}
-        dialog.navigate_to_deadline_requested.connect(
-            lambda case_id, deadline_id: pending_navigation.update({
-                "case_id": case_id,
-                "deadline_id": deadline_id,
-            })
-        )
-        dialog.exec()
-        owner = self._find_case_manager_dialog()
-        if pending_navigation:
-            if owner is not None:
-                owner.open_case_deadline_from_calendar(
-                    pending_navigation.get("case_id", ""),
-                    pending_navigation.get("deadline_id", ""),
-                )
-            else:
-                self._refresh_case_from_store()
-            return
-        if owner is not None:
-            owner.refresh_cases(preferred_case_id=self._case_id)
-        else:
-            self._refresh_case_from_store()
+        self.view_calendar_requested.emit()
 
     def _clear_layout(self, layout) -> None:
         while layout.count():

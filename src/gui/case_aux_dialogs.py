@@ -1210,6 +1210,19 @@ class DeadlineEditorDialog(QDialog):
         content_layout.addWidget(self._cards_splitter)
         layout.addWidget(content, 1)
 
+        button_bar = QHBoxLayout()
+
+        # 删除按钮（仅在编辑已有期限时显示，置于最左侧）
+        has_deadline_id = bool(str(self._deadline.get("id", "")).strip())
+        if has_deadline_id:
+            delete_btn = QPushButton("删除")
+            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._style_delete_button(delete_btn)
+            delete_btn.clicked.connect(self._on_delete)
+            button_bar.addWidget(delete_btn)
+
+        button_bar.addStretch()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -1223,7 +1236,8 @@ class DeadlineEditorDialog(QDialog):
         if cancel_button:
             cancel_button.setText("取消")
             self._style_dialog_button(cancel_button, primary=False)
-        layout.addWidget(buttons)
+        button_bar.addWidget(buttons)
+        layout.addLayout(button_bar)
 
         self._set_time_mode("all_day", refresh=False)
         self._refresh_smart_panel_metrics()
@@ -1263,6 +1277,31 @@ class DeadlineEditorDialog(QDialog):
             QPushButton:hover {{
                 background: {c['surface_2']};
                 color: {c['text_primary']};
+            }}
+        """)
+
+    def _on_delete(self) -> None:
+        """删除当前期限任务（无二次确认）。"""
+        self._result = {"deleted": True, "id": str(self._deadline.get("id", "")).strip()}
+        self.accept()
+
+    def _style_delete_button(self, button: QPushButton) -> None:
+        c = COLORS
+        button.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['surface_0']};
+                color: #ef4444;
+                border: 1px solid #fca5a5;
+                border-radius: 9px;
+                padding: 0 14px;
+                min-height: 32px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: #fee2e2;
+                color: #dc2626;
+                border-color: #f87171;
             }}
         """)
 

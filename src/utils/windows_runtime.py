@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 from src.utils.platform_utils import is_windows
 
 
-APP_USER_MODEL_ID = "CaseFolderManager.LEXORA.2"
+APP_USER_MODEL_ID = "WangLi.LEXORA.2"
 
 
 def configure_windows_process(app_user_model_id: str = APP_USER_MODEL_ID) -> None:

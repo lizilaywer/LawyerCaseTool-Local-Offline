@@ -43,8 +43,9 @@ from src.gui.widgets.variable_input import VariablesForm
 from src.gui.widgets.folder_tree import FolderTreePreview
 from src.gui.generation_dialog import GenerationDialog
 from src.gui.template_manager import TemplateManagerDialog
+# TemplateMakerDialog is now integrated as a tab inside TemplateManagerDialog
 from src.gui.settings_dialog import SettingsDialog
-from src.gui.template_maker import TemplateMakerDialog
+# TemplateMakerDialog removed - now integrated into TemplateManagerDialog
 from src.utils.logger import get_logger
 from src.utils.platform_utils import open_path
 from src.utils.version import get_version
@@ -1552,7 +1553,7 @@ class MainWindow(QMainWindow):
 
     def _on_template_maker(self) -> None:
         """打开 Word 模板制作器"""
-        dialog = TemplateMakerDialog(self)
+        dialog = TemplateManagerDialog(self, initial_tab="maker")
         dialog.exec()
 
     def _on_archive(self) -> None:
@@ -1662,6 +1663,8 @@ class MainWindow(QMainWindow):
             <p>版本: {get_version()}</p>
             <p>一款以本地文件夹为核心载体的案件管理桌面应用。</p>
             <p>支持案件台账、模板生成、OCR 信息识别、电子归档与工具中心。</p>
+            <p style='color:#888;'>开发者：汪立（安徽始信律师事务所）</p>
+            <p style='color:#888;'>邮箱：491445490@qq.com</p>
             """
         )
 

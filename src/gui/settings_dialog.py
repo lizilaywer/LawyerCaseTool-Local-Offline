@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QWidget,
     QSizePolicy,
+    QFrame,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal
 
@@ -188,6 +190,10 @@ class SettingsDialog(QDialog):
         # 备份与迁移
         backup_tab = self._create_backup_tab()
         tab_widget.addTab(backup_tab, "备份与迁移")
+
+        # 关于
+        about_tab = self._create_about_tab()
+        tab_widget.addTab(about_tab, "关于")
 
         layout.addWidget(tab_widget)
 
@@ -371,6 +377,279 @@ class SettingsDialog(QDialog):
             background: transparent;
         """)
         return label
+
+    def _create_about_tab(self) -> QWidget:
+        """创建'关于'选项卡。"""
+        from src.utils.version import get_version
+
+        c = COLORS
+        widget = QWidget()
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # 可滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        root = QVBoxLayout(content)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(16)
+
+        # ── 应用标识 ──
+        header_card = QFrame()
+        header_card.setStyleSheet(f"""
+            QFrame {{
+                background: {c['surface_0']};
+                border: 1px solid {c['border']};
+                border-radius: 14px;
+            }}
+        """)
+        header_layout = QVBoxLayout(header_card)
+        header_layout.setContentsMargins(24, 24, 24, 20)
+        header_layout.setSpacing(8)
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        app_name = QLabel("案件文件夹管理系统")
+        app_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        app_name.setStyleSheet(f"""
+            color: {c['text_primary']};
+            font-size: 22px;
+            font-weight: 700;
+            background: transparent;
+            border: none;
+        """)
+        header_layout.addWidget(app_name)
+
+        brand_en = QLabel("LEXORA")
+        brand_en.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_en.setStyleSheet(f"""
+            color: {c['accent']};
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 4px;
+            background: transparent;
+            border: none;
+        """)
+        header_layout.addWidget(brand_en)
+
+        ver_label = QLabel(f"v{get_version()}")
+        ver_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver_label.setStyleSheet(f"""
+            color: {c['text_muted']};
+            font-size: 12px;
+            background: transparent;
+            border: none;
+        """)
+        header_layout.addWidget(ver_label)
+
+        tagline = QLabel("以本地文件夹为核心载体的案件管理桌面应用")
+        tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tagline.setWordWrap(True)
+        tagline.setStyleSheet(f"""
+            color: {c['text_secondary']};
+            font-size: 12px;
+            background: transparent;
+            border: none;
+        """)
+        header_layout.addWidget(tagline)
+
+        root.addWidget(header_card)
+
+        # ── 开发者信息 ──
+        dev_card = QFrame()
+        dev_card.setStyleSheet(f"""
+            QFrame {{
+                background: {c['surface_0']};
+                border: 1px solid {c['border']};
+                border-radius: 14px;
+            }}
+        """)
+        dev_layout = QVBoxLayout(dev_card)
+        dev_layout.setContentsMargins(24, 18, 24, 18)
+        dev_layout.setSpacing(10)
+
+        dev_title = QLabel("开发者")
+        dev_title.setStyleSheet(f"""
+            color: {c['text_primary']};
+            font-size: 14px;
+            font-weight: 700;
+            background: transparent;
+            border: none;
+        """)
+        dev_layout.addWidget(dev_title)
+
+        # 姓名 + 身份
+        name_row = QHBoxLayout()
+        name_row.setSpacing(6)
+        dev_name = QLabel("汪立")
+        dev_name.setStyleSheet(f"""
+            color: {c['accent']};
+            font-size: 16px;
+            font-weight: 700;
+            background: transparent;
+            border: none;
+        """)
+        name_row.addWidget(dev_name)
+        dev_role = QLabel("安徽始信律师事务所执业律师 ｜ 全栈型律师")
+        dev_role.setStyleSheet(f"""
+            color: {c['text_secondary']};
+            font-size: 12px;
+            background: transparent;
+            border: none;
+        """)
+        name_row.addWidget(dev_role)
+        name_row.addStretch()
+        dev_layout.addLayout(name_row)
+
+        # 邮箱
+        email_label = QLabel('邮箱：491445490@qq.com')
+        email_label.setStyleSheet(f"""
+            color: {c['text_secondary']};
+            font-size: 12px;
+            background: transparent;
+            border: none;
+        """)
+        dev_layout.addWidget(email_label)
+
+        root.addWidget(dev_card)
+
+        # ── 关注开发者 ──
+        social_card = QFrame()
+        social_card.setStyleSheet(f"""
+            QFrame {{
+                background: {c['surface_0']};
+                border: 1px solid {c['border']};
+                border-radius: 14px;
+            }}
+        """)
+        social_layout = QVBoxLayout(social_card)
+        social_layout.setContentsMargins(24, 18, 24, 18)
+        social_layout.setSpacing(10)
+
+        social_title = QLabel("关注开发者")
+        social_title.setStyleSheet(f"""
+            color: {c['text_primary']};
+            font-size: 14px;
+            font-weight: 700;
+            background: transparent;
+            border: none;
+        """)
+        social_layout.addWidget(social_title)
+
+        _social_items = [
+            ("微信公众号", "池州汪律的Ai进化论"),
+            ("抖音 / 小红书 / B站", "池州有个汪律师"),
+        ]
+        for label_text, value_text in _social_items:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            lbl = QLabel(f"{label_text}：")
+            lbl.setStyleSheet(f"""
+                color: {c['text_muted']};
+                font-size: 12px;
+                background: transparent;
+                border: none;
+            """)
+            row.addWidget(lbl)
+            val = QLabel(value_text)
+            val.setStyleSheet(f"""
+                color: {c['text_primary']};
+                font-size: 12px;
+                font-weight: 600;
+                background: transparent;
+                border: none;
+            """)
+            row.addWidget(val)
+            row.addStretch()
+            social_layout.addLayout(row)
+
+        root.addWidget(social_card)
+
+        # ── 二维码占位 ──
+        qr_row = QHBoxLayout()
+        qr_row.setSpacing(16)
+
+        qr_cards = [
+            ("扫码关注公众号", "resources/icons/qr_wechat.png"),
+            ("打赏支持开发者", "resources/icons/qr_reward.png"),
+        ]
+        for title_text, qr_path in qr_cards:
+            card = QFrame()
+            card.setFixedSize(160, 200)
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: {c['surface_0']};
+                    border: 1px solid {c['border']};
+                    border-radius: 14px;
+                }}
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 14, 12, 14)
+            card_layout.setSpacing(8)
+            card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            # 尝试加载二维码图片
+            from pathlib import Path as _P
+            img_path = _P(__file__).parent.parent.parent / qr_path
+            if img_path.exists():
+                from PySide6.QtGui import QPixmap
+                pix = QPixmap(str(img_path))
+                qr_img = QLabel()
+                qr_img.setPixmap(pix.scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                qr_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                qr_img.setStyleSheet("background: transparent; border: none;")
+            else:
+                # 占位符：虚线框 + 提示文字
+                qr_img = QLabel("二维码\n占位")
+                qr_img.setFixedSize(120, 120)
+                qr_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                qr_img.setStyleSheet(f"""
+                    background: {c['surface_1']};
+                    border: 2px dashed {c['border']};
+                    border-radius: 10px;
+                    color: {c['text_muted']};
+                    font-size: 12px;
+                """)
+            card_layout.addWidget(qr_img)
+
+            qr_title = QLabel(title_text)
+            qr_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            qr_title.setStyleSheet(f"""
+                color: {c['text_secondary']};
+                font-size: 11px;
+                font-weight: 600;
+                background: transparent;
+                border: none;
+            """)
+            card_layout.addWidget(qr_title)
+
+            qr_row.addWidget(card)
+
+        qr_row.addStretch()
+        root.addLayout(qr_row)
+
+        # ── 版权 ──
+        root.addSpacing(8)
+        copyright_label = QLabel("© 2024-2026 汪立  版权所有")
+        copyright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        copyright_label.setStyleSheet(f"""
+            color: {c['text_muted']};
+            font-size: 11px;
+            background: transparent;
+            border: none;
+        """)
+        root.addWidget(copyright_label)
+
+        root.addStretch()
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        return widget
 
     def _create_backup_tab(self) -> QWidget:
         """创建备份与迁移选项卡。"""

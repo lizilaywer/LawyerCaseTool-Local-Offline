@@ -18,7 +18,7 @@ class ContextMenuManager:
     DIRECTORY_BACKGROUND_KEY = r"Directory\Background\shell\LawyerCaseTool"
     DIRECTORY_KEY = r"Directory\shell\LawyerCaseTool"
     BACKUP_EXTENSION = ".lexora-backup"
-    BACKUP_PROG_ID = "CaseFolderManager.LEXORABackup"
+    BACKUP_PROG_ID = "WangLi.LEXORABackup"
 
     def __init__(self):
         self._registry = RegistryManager()

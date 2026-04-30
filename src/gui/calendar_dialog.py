@@ -673,11 +673,10 @@ class DeadlineCalendarWidget(QWidget):
 
         ultra_compact = card_rect.width() < 80
         compact_layout = card_rect.width() < 100
-        base_top = 28 if ultra_compact else (32 if compact_layout else 38)
-        line_height = 14 if ultra_compact else (16 if compact_layout else 18)
-        line_gap = 2 if ultra_compact else (3 if compact_layout else 4)
-        footer_height = 18
-        available = card_rect.height() - base_top - 6
+        base_top = 24 if ultra_compact else (27 if compact_layout else 26)
+        line_height = 12 if ultra_compact else (13 if compact_layout else 15)
+        line_gap = 1 if ultra_compact else (2 if compact_layout else 2)
+        available = card_rect.height() - base_top - 2
         if available < line_height:
             return 0
         if ultra_compact or (compact_layout and (card_rect.width() <= 84 or card_rect.height() <= 72)):
@@ -688,8 +687,8 @@ class DeadlineCalendarWidget(QWidget):
             capacity += 1
             remaining -= (line_height + line_gap)
         if self._view_mode == "month":
-            return min(5, max(1, capacity))
-        return min(8, max(2, capacity - (footer_height // max(1, line_height + line_gap))))
+            return min(3, max(1, capacity))
+        return min(8, max(2, capacity))
 
     def _show_top_badge(self, card_rect: QRect, visual_state: str, deadline_count: int) -> bool:
         """判断是否显示右上角状态/数量徽标。"""
@@ -959,7 +958,7 @@ class DeadlineCalendarWidget(QWidget):
                     compact_layout = card_rect.width() < 100 and self._view_mode == "month"
                     day_badge_width = 20 if ultra_compact else (24 if compact_layout else (52 if self._view_mode == "week" else 26))
                     badge_top = card_rect.top() + (4 if ultra_compact else 6)
-                    day_badge_rect = QRect(card_rect.left() + (4 if ultra_compact else 6), badge_top, day_badge_width, 20 if ultra_compact else 22)
+                    day_badge_rect = QRect(card_rect.left() + (4 if ultra_compact else 6), badge_top, day_badge_width, 18)
                     if self._view_mode == "week":
                         line_height = 34
                         line_gap = 8
@@ -975,7 +974,7 @@ class DeadlineCalendarWidget(QWidget):
                     )
                     if is_expanded_more_card:
                         preview_top_for_height = day_badge_rect.bottom() + (
-                            4 if ultra_compact else (6 if compact_layout else 10)
+                            2 if ultra_compact else (3 if compact_layout else 2)
                         )
                         item_count = len(render_deadlines)
                         desired_height = (
@@ -1088,9 +1087,9 @@ class DeadlineCalendarWidget(QWidget):
                             line_height = 34
                             line_gap = 8
                         else:
-                            line_height = 14 if ultra_compact else (16 if compact_layout else 20)
-                            line_gap = 2 if ultra_compact else (3 if compact_layout else 6)
-                        preview_top = day_badge_rect.bottom() + (4 if ultra_compact else (6 if compact_layout else 10))
+                            line_height = 12 if ultra_compact else (13 if compact_layout else 15)
+                            line_gap = 1 if ultra_compact else (2 if compact_layout else 2)
+                        preview_top = day_badge_rect.bottom() + (2 if ultra_compact else (3 if compact_layout else 2))
 
                         for index, item in enumerate(preview_items):
                             line_rect = QRect(
@@ -1202,14 +1201,22 @@ class DeadlineCalendarWidget(QWidget):
 
                         if extra_count > 0:
                             indicator_text = self._extra_indicator_text(extra_count)
-                            more_rect = QRect(card_rect.left() + 8, card_rect.bottom() - 24, card_rect.width() - 16, 16)
-                            painter.setPen(Qt.PenStyle.NoPen)
-                            painter.setBrush(QBrush(QColor(c['surface_2'])))
-                            painter.drawRoundedRect(more_rect, 8, 8)
-                            painter.setFont(preview_meta_font)
-                            painter.setPen(QColor(c['text_muted']))
-                            painter.drawText(more_rect, Qt.AlignmentFlag.AlignCenter, indicator_text)
-                            self._more_hit_regions.append((QRect(more_rect), d))
+                            # 动态计算 footer 位置，避免与任务条重叠且不下沿溢出
+                            if preview_items:
+                                last_bottom = preview_top + (len(preview_items) - 1) * (line_height + line_gap) + line_height
+                            else:
+                                last_bottom = preview_top
+                            more_top = max(last_bottom + 2, card_rect.bottom() - 14)
+                            more_height = min(12, card_rect.bottom() - more_top - 2)
+                            if more_height >= 8:
+                                more_rect = QRect(card_rect.left() + 8, more_top, card_rect.width() - 16, more_height)
+                                painter.setPen(Qt.PenStyle.NoPen)
+                                painter.setBrush(QBrush(QColor(c['surface_2'])))
+                                painter.drawRoundedRect(more_rect, 6, 6)
+                                painter.setFont(preview_meta_font)
+                                painter.setPen(QColor(c['text_muted']))
+                                painter.drawText(more_rect, Qt.AlignmentFlag.AlignCenter, indicator_text)
+                                self._more_hit_regions.append((QRect(more_rect), d))
         except Exception as exc:
             self._logger.error(f"绘制期限日历失败: {exc}")
         finally:
@@ -2793,6 +2800,18 @@ class CalendarDialog(QDialog):
         case_id = dialog.get_selected_case_id()
         if not data:
             return False
+
+        if data.get("deleted"):
+            deleted_id = str(data.get("id", "")).strip()
+            original_case_id = str(deadline.get("case_id", "")).strip() if deadline else ""
+            if original_case_id:
+                self._cm.remove_deadline(original_case_id, deleted_id)
+            else:
+                self._cm.remove_global_deadline(deleted_id)
+            self._jump_to_date(
+                datetime.strptime(str(deadline.get("date", "") if deadline else "").strip() or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d").date()
+            )
+            return True
 
         edited_date_text = str(data.get("date", "")).strip()
         edited_date = datetime.strptime(edited_date_text, "%Y-%m-%d").date()

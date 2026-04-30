@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 案件文件夹管理系统 - 一款以本地文件夹为核心载体的案件管理桌面应用，支持案件台账、模板生成、OCR、归档与工具中心。
 
-**当前版本**: v2.0.0 (2026-04-21)
+**当前版本**: v2.0.0 (2026-04-30)
+
+**开发者**: 汪立（安徽始信律师事务所执业律师）
 
 ## 常用命令
 
@@ -32,6 +34,14 @@ python scripts/uninstall_context_menu.py
 ```
 
 ## 近期更新
+
+### v2.1.0 (2026-04-30) - 工具中心大升级与开发者品牌
+- **自动排版**: 新增 Word 文档自动排版功能，参照 GB/T 9704-2012 标准智能识别标题层级并应用法律文书格式（方正小标宋/黑体/仿宋）
+- **文档对比**: 新增 Word 文档对比功能，左右双栏展示差异
+- **法院短信增强**: 支持拖拽 PDF/图片到输入框自动识别传票信息；新增被传唤人提取；庭审识别结果支持双击编辑；新增"不关联案件"按钮直接保存到桌面
+- **OCR 传票解析**: 多策略解析传票中的被传唤人姓名（PDF 紧凑文本/OCR 片段拼接/标题提取）
+- **设置-关于页**: 新增精美"关于"标签页，展示开发者信息、社交媒体、二维码占位
+- **开发者署名**: 全局更新作者信息为汪立律师（__author__、pyproject.toml、关于对话框、User-Agent 等）
 
 ### v1.5.0 (2026-04-02) - 案件管理与期限日历系统
 - **案件管理**: 新增案件管理对话框，支持按状态分组（进行中/待立案/已结案）、分类筛选、搜索、导入已有文件夹
@@ -86,16 +96,24 @@ src/
 │   ├── folder_generator.py  # 文件夹结构生成器
 │   ├── template_engine.py   # Word 模板处理（使用 docxtpl）
 │   ├── batch_processor.py   # 批量处理器
-│   └── case_manager.py      # 案件索引管理器（CRUD/搜索/标签/期限）
+│   ├── case_manager.py      # 案件索引管理器（CRUD/搜索/标签/期限）
+│   ├── court_sms_service.py # 法院短信与传票解析服务
+│   ├── docx_auto_format.py  # Word 文档自动排版引擎
+│   └── docx_compare.py      # Word 文档文本对比
 ├── gui/            # GUI 界面（PySide6）
 │   ├── main_window.py       # 主窗口
 │   ├── generation_dialog.py # 生成对话框
 │   ├── template_manager.py  # 模板管理器
-│   ├── settings_dialog.py   # 设置对话框
+│   ├── settings_dialog.py   # 设置对话框（含"关于"标签页）
+│   ├── tool_center_dialog.py # 工具中心（法院短信/费用/文档对比/自动排版等）
 │   ├── case_manager_dialog.py # 案件管理对话框
 │   ├── case_detail_panel.py # 案件详情面板
 │   ├── calendar_dialog.py   # 期限日历对话框
 │   └── widgets/             # 自定义控件
+│       ├── docx_auto_format_widget.py  # 自动排版界面
+│       ├── docx_compare_widget.py      # 文档对比界面
+│       ├── archive_file_tree.py        # 归档文件树
+│       └── archive_preview.py          # 文件预览控件
 ├── config/         # 配置管理
 │   ├── config_manager.py    # 单例配置管理器
 │   ├── path_manager.py      # 路径管理

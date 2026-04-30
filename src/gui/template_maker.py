@@ -596,8 +596,8 @@ class ReplaceDialog(QDialog):
         return self._result_search_text, self._result_variable, self._result_replace_all
 
 
-class TemplateMakerDialog(QDialog):
-    """Word 模板制作器主窗口 - Modern UI v3"""
+class TemplateMakerWidget(QWidget):
+    """Word 模板制作器面板 - 可嵌入为标签页"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -609,7 +609,7 @@ class TemplateMakerDialog(QDialog):
         self._selected_text: str = ""
         self._variables: List[Dict] = []
         self._is_tree_expanded: bool = False  # 文件树展开状态
-        
+
         # 单击/双击区分定时器
         from PySide6.QtCore import QTimer
         self._click_timer = QTimer(self)
@@ -617,12 +617,8 @@ class TemplateMakerDialog(QDialog):
         self._click_timer.timeout.connect(self._on_click_timeout)
         self._pending_item: Optional[QTreeWidgetItem] = None
         self._pending_column: int = 0
-        
-        self._load_default_variables()
 
-        self.setWindowTitle("Word 模板制作器 - 案件文件夹管理系统")
-        self.setMinimumSize(*APP_SURFACE_MIN_SIZE)
-        self.resize(*APP_SURFACE_DEFAULT_SIZE)
+        self._load_default_variables()
         self._setup_ui()
         self._refresh_file_tree()
 
@@ -1823,12 +1819,11 @@ class TemplateMakerDialog(QDialog):
             self._logger.error(f"保存变量到模板失败: {e}")
             return False
 
-    def closeEvent(self, event) -> None:
-        """关闭事件"""
-        # 检查未保存的更改
+    def check_unsaved_changes(self) -> bool:
+        """检查未保存的更改，返回 True 表示可以继续关闭。"""
         if self._word_editor.is_modified():
             reply = QMessageBox.question(
-                self,
+                self.window(),
                 "确认",
                 "文档有未保存的更改，是否保存？",
                 QMessageBox.StandardButton.Save |
@@ -1839,12 +1834,34 @@ class TemplateMakerDialog(QDialog):
             if reply == QMessageBox.StandardButton.Save:
                 self._on_save()
             elif reply == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
+                return False
+        return True
 
-        # 清理资源
+    def cleanup(self) -> None:
+        """清理资源"""
         if hasattr(self, '_word_preview'):
             self._word_preview.cleanup()
-
         self._word_editor.close()
+
+
+class TemplateMakerDialog(QDialog):
+    """Word 模板制作器对话框 - 兼容旧调用"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._maker = TemplateMakerWidget(self)
+
+        self.setWindowTitle("Word 模板制作器 - 案件文件夹管理系统")
+        self.setMinimumSize(*APP_SURFACE_MIN_SIZE)
+        self.resize(*APP_SURFACE_DEFAULT_SIZE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._maker)
+
+    def closeEvent(self, event) -> None:
+        if not self._maker.check_unsaved_changes():
+            event.ignore()
+            return
+        self._maker.cleanup()
         event.accept()

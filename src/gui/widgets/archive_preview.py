@@ -53,6 +53,7 @@ class ArchivePreview(QWidget):
     variables_detected = Signal(list)     # 检测到新变量
     save_requested = Signal()             # 保存请求
     save_as_requested = Signal()          # 另存为请求
+    add_to_notes_requested = Signal(str)  # 添加到笔记 (选中的文本)
 
     # 变量匹配正则
     VARIABLE_PATTERN = re.compile(r'\{\{(\w+)\}\}')
@@ -216,7 +217,7 @@ class ArchivePreview(QWidget):
         """创建 PDF 阅读器工具栏"""
         c = COLORS
         toolbar = QWidget()
-        toolbar.setFixedHeight(42)
+        toolbar.setFixedHeight(48)
         toolbar.setProperty("archivePdfToolbar", True)
         toolbar.setStyleSheet(f"""
             QWidget[archivePdfToolbar="true"] {{
@@ -284,7 +285,7 @@ class ArchivePreview(QWidget):
         page_nav_layout.setSpacing(4)
 
         self._prev_btn = QPushButton("‹")
-        self._prev_btn.setFixedSize(30, 30)
+        self._prev_btn.setFixedSize(30, 32)
         self._prev_btn.setToolTip("上一页")
         self._prev_btn.clicked.connect(self._on_pdf_prev_page)
         page_nav_layout.addWidget(self._prev_btn)
@@ -296,7 +297,7 @@ class ArchivePreview(QWidget):
         page_layout.setSpacing(3)
 
         self._page_input = QLineEdit()
-        self._page_input.setFixedSize(36, 28)
+        self._page_input.setFixedSize(36, 30)
         self._page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._page_input.setStyleSheet(input_style())
         self._page_input.returnPressed.connect(self._on_pdf_page_jump)
@@ -310,7 +311,7 @@ class ArchivePreview(QWidget):
         page_nav_layout.addWidget(page_widget)
 
         self._next_btn = QPushButton("›")
-        self._next_btn.setFixedSize(30, 30)
+        self._next_btn.setFixedSize(30, 32)
         self._next_btn.setToolTip("下一页")
         self._next_btn.clicked.connect(self._on_pdf_next_page)
         page_nav_layout.addWidget(self._next_btn)
@@ -321,7 +322,7 @@ class ArchivePreview(QWidget):
 
         # 缩放控制组
         self._zoom_out_btn = QPushButton("−")
-        self._zoom_out_btn.setFixedSize(30, 30)
+        self._zoom_out_btn.setFixedSize(30, 32)
         self._zoom_out_btn.setToolTip("缩小")
         self._zoom_out_btn.clicked.connect(self._on_pdf_zoom_out)
         layout.addWidget(self._zoom_out_btn)
@@ -333,7 +334,7 @@ class ArchivePreview(QWidget):
         layout.addWidget(self._zoom_label)
 
         self._zoom_in_btn = QPushButton("+")
-        self._zoom_in_btn.setFixedSize(30, 30)
+        self._zoom_in_btn.setFixedSize(30, 32)
         self._zoom_in_btn.setToolTip("放大")
         self._zoom_in_btn.clicked.connect(self._on_pdf_zoom_in)
         layout.addWidget(self._zoom_in_btn)
@@ -342,21 +343,21 @@ class ArchivePreview(QWidget):
 
         # 适应模式按钮
         self._fit_width_btn = QPushButton("↔")
-        self._fit_width_btn.setFixedSize(34, 30)
+        self._fit_width_btn.setFixedSize(34, 32)
         self._fit_width_btn.setCheckable(True)
         self._fit_width_btn.setToolTip("适应窗口宽度")
         self._fit_width_btn.clicked.connect(lambda: self._on_pdf_fit_mode("width"))
         layout.addWidget(self._fit_width_btn)
 
         self._fit_page_btn = QPushButton("▣")
-        self._fit_page_btn.setFixedSize(34, 30)
+        self._fit_page_btn.setFixedSize(34, 32)
         self._fit_page_btn.setCheckable(True)
         self._fit_page_btn.setToolTip("适应窗口大小")
         self._fit_page_btn.clicked.connect(lambda: self._on_pdf_fit_mode("fit"))
         layout.addWidget(self._fit_page_btn)
 
         self._original_size_btn = QPushButton("1:1")
-        self._original_size_btn.setFixedSize(42, 30)
+        self._original_size_btn.setFixedSize(42, 32)
         self._original_size_btn.setCheckable(True)
         self._original_size_btn.setToolTip("原始大小")
         self._original_size_btn.clicked.connect(lambda: self._on_pdf_fit_mode("original"))
@@ -882,8 +883,8 @@ class ArchivePreview(QWidget):
             self._render_image()
 
     def _show_context_menu(self, position: QPoint) -> None:
-        """显示右键菜单"""
-        if self._current_type not in ("word", "pdf"):
+        """显示右键菜单（仅 Word 文档支持选中文字添加到笔记）"""
+        if self._current_type != "word":
             return
 
         # 获取选中的文本
@@ -900,23 +901,8 @@ class ArchivePreview(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(self._get_menu_style())
 
-        # 设置为变量
-        set_var_menu = menu.addMenu("设置为变量")
-        for var in self._variables:
-                action = set_var_menu.addAction(f"{var['name']} ({{{{{var['key']}}}}})")
-                action.triggered.connect(
-                    lambda checked, k=var['key']: self._on_set_variable(k)
-                )
-
-        menu.addSeparator()
-
-        # 定义为变量字段
-        def_var_menu = menu.addMenu("定义为变量字段")
-        for var in self._variables:
-                action = def_var_menu.addAction(f"{var['name']} ({{{{{var['key']}}}}})")
-                action.triggered.connect(
-                    lambda checked, k=var['key']: self._on_define_field(k)
-                )
+        action = menu.addAction("添加到笔记")
+        action.triggered.connect(lambda checked=False: self._on_add_to_notes(selected_text))
 
         menu.exec_(self._text_preview.mapToGlobal(position))
 
@@ -951,37 +937,9 @@ class ArchivePreview(QWidget):
         plain_text = self._text_preview.toPlainText()
         return plain_text[cursor.selectionStart():cursor.selectionEnd()]
 
-    def _on_set_variable(self, var_key: str) -> None:
-        """设置为变量 - 替换选中文本为变量占位符并高亮"""
-        cursor = self._text_preview.textCursor()
-        if not cursor.hasSelection():
-            return
-
-        text = self._get_selected_text_from_cursor(cursor)
-        selection_info = {
-            "selection_start": cursor.selectionStart(),
-            "selection_end": cursor.selectionEnd(),
-        }
-
-        # 替换选中的文本为变量占位符
-        cursor.insertText(f"{{{{{var_key}}}}}")
-
-        # 更新原始文本
-        self._original_text = self._text_preview.toPlainText()
-
-        # 重新高亮所有变量
-        self._highlight_text_with_variables(self._original_text)
-
-        # 发送信号
-        self.variable_set.emit(var_key, text, selection_info)
-
-    def _on_define_field(self, var_key: str) -> None:
-        """定义为变量字段"""
-        cursor = self._text_preview.textCursor()
-        if not cursor.hasSelection():
-            return
-        text = self._get_selected_text_from_cursor(cursor)
-        self.field_defined.emit(var_key, text)
+    def _on_add_to_notes(self, text: str) -> None:
+        """将选中的文本添加到笔记。"""
+        self.add_to_notes_requested.emit(text)
 
     def get_selected_text(self) -> str:
         """获取当前选中的文本"""

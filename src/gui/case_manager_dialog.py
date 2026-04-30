@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from PySide6.QtCore import Qt, Signal, QTimer, QObject, QThread
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -35,7 +37,9 @@ from src.core.case_manager import (
     get_case_manager,
 )
 from src.gui.archive_dialog import ArchiveDialog
+from src.gui.calendar_dialog import CalendarDialog
 from src.gui.case_aux_dialogs import TagEditorDialog, normalize_tags
+from src.gui.tool_center_dialog import ToolCenterDialog
 from src.gui.case_detail_panel import CaseDetailPanel
 from src.gui.styles import APP_COLORS as COLORS
 from src.gui.window_metrics import APP_SURFACE_DEFAULT_SIZE, APP_SURFACE_MIN_SIZE
@@ -210,7 +214,7 @@ class CaseImportDropFrame(QFrame):
     def _setup_ui(self) -> None:
         c = COLORS
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(6, 10, 6, 10)
         layout.setSpacing(8)
 
         self._new_case_btn = QPushButton("新建案件")
@@ -454,7 +458,7 @@ class CaseManagerDialog(QDialog):
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setChildrenCollapsible(True)
-        self._splitter.setHandleWidth(16)
+        self._splitter.setHandleWidth(8)
         self._splitter.setStyleSheet(f"""
             QSplitter::handle {{
                 background: transparent;
@@ -473,12 +477,25 @@ class CaseManagerDialog(QDialog):
         self._detail_panel.archive_requested.connect(self._on_archive_case)
         self._detail_panel.relink_folder_requested.connect(self._on_relink_folder)
         self._detail_panel.case_refreshed.connect(self._on_detail_case_refreshed)
+        self._detail_panel.preview_fullscreen_toggled.connect(self._on_preview_fullscreen_toggled)
+        self._detail_panel.view_calendar_requested.connect(self._on_view_calendar)
+        self._detail_panel.tool_center_requested.connect(self._on_tool_center)
         self._splitter.addWidget(self._detail_panel)
         self._splitter.setCollapsible(0, True)
 
         self._splitter.setSizes([self._sidebar_expanded_width, 998])
         self._setup_sidebar_toggle()
-        main_layout.addWidget(self._splitter, 1)
+
+        # 主页面栈：支持案件管理与功能页面内嵌切换
+        self._case_page = QWidget()
+        case_page_layout = QVBoxLayout(self._case_page)
+        case_page_layout.setContentsMargins(0, 0, 0, 0)
+        case_page_layout.setSpacing(0)
+        case_page_layout.addWidget(self._splitter, 1)
+
+        self._main_stack = QStackedWidget()
+        self._main_stack.addWidget(self._case_page)
+        main_layout.addWidget(self._main_stack, 1)
 
         self._status_bar = QLabel("")
         self._status_bar.setFixedHeight(30)
@@ -525,6 +542,15 @@ class CaseManagerDialog(QDialog):
         handle_layout.addWidget(self._btn_toggle_sidebar, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         handle_layout.addStretch()
         self._update_sidebar_toggle_button()
+
+    def _on_preview_fullscreen_toggled(self, is_fullscreen: bool) -> None:
+        """响应文件预览全屏信号：折叠或展开左侧案件栏。"""
+        if is_fullscreen:
+            if not self._sidebar_collapsed:
+                self._toggle_sidebar()
+        else:
+            if self._sidebar_collapsed:
+                self._toggle_sidebar()
 
     def _update_sidebar_toggle_button(self) -> None:
         if not hasattr(self, "_btn_toggle_sidebar"):
@@ -663,7 +689,7 @@ class CaseManagerDialog(QDialog):
         """)
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(6)
 
         header = QHBoxLayout()
@@ -793,7 +819,7 @@ class CaseManagerDialog(QDialog):
         """)
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(6, 10, 6, 10)
         layout.setSpacing(8)
 
         header = QHBoxLayout()
@@ -903,7 +929,7 @@ class CaseManagerDialog(QDialog):
         panel.paths_dropped.connect(self._on_paths_dropped)
 
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(4, 8, 4, 8)
         layout.setSpacing(8)
 
         self._drop_frame = CaseImportDropFrame()
@@ -1042,6 +1068,61 @@ class CaseManagerDialog(QDialog):
                 self._detail_panel.load_case(case)
 
         self._update_status_bar(cases)
+
+    def _rebuild_group_headers(self) -> None:
+        """仅重建分组标题并重新排列卡片。"""
+        # 移除所有 widget（分组头 + 卡片），后面按顺序重新插入
+        for header in getattr(self, "_group_headers", []):
+            self._list_layout.removeWidget(header)
+            header.deleteLater()
+        self._group_headers = []
+
+        cases = self._get_filtered_cases()
+        self._case_id_order = [case["id"] for case in cases]
+
+        self._list_container.setUpdatesEnabled(False)
+        try:
+            # 先把所有卡片从 layout 中取出（不销毁）
+            for cid in self._case_id_order:
+                if cid in self._case_cards:
+                    self._list_layout.removeWidget(self._case_cards[cid])
+
+            insert_position = 0
+            for group_name, group_status in STATUS_GROUPS:
+                group_cases = [c for c in cases if c.get("status", "active") == group_status]
+                if not group_cases:
+                    continue
+
+                group_header = QLabel(f"  {group_name} ({len(group_cases)})")
+                group_header.setStyleSheet(f"""
+                    background: {COLORS["surface_0"]};
+                    color: {COLORS["text_secondary"]};
+                    font-size: 11px;
+                    font-weight: 600;
+                    padding: 6px 8px;
+                    border-left: 3px solid {COLORS["accent"]};
+                    border-radius: 0 6px 6px 0;
+                    margin: 4px 2px 2px 2px;
+                """)
+                self._group_headers.append(group_header)
+                self._list_layout.insertWidget(insert_position, group_header)
+                insert_position += 1
+
+                for case in group_cases:
+                    cid = case["id"]
+                    if cid in self._case_cards:
+                        self._list_layout.insertWidget(insert_position, self._case_cards[cid])
+                    insert_position += 1
+
+            # 删除不在 visible_ids 中的残余卡片
+            visible_ids = {c["id"] for c in cases}
+            for cid in list(self._case_cards.keys()):
+                if cid not in visible_ids:
+                    card = self._case_cards.pop(cid)
+                    self._list_layout.removeWidget(card)
+                    card.deleteLater()
+        finally:
+            self._list_container.setUpdatesEnabled(True)
 
     def _get_filtered_cases(self) -> List[Dict]:
         if self._search_text:
@@ -1351,12 +1432,9 @@ class CaseManagerDialog(QDialog):
 
         clicked = box.clickedButton()
         if clicked is remove_only_btn:
-            self._run_case_operation_async(
-                "删除案件",
-                "正在从软件中剔除案件记录...",
-                lambda: self._cm.remove_case(case_id, delete_folder=False),
-                lambda success: self._after_delete_case(case_id, bool(success), False),
-            )
+            # 仅剔除记录（JSON 操作），同步执行即可
+            success = self._cm.remove_case(case_id, delete_folder=False)
+            self._after_delete_case(case_id, bool(success), False)
         elif remove_folder_btn is not None and clicked is remove_folder_btn:
             confirm = QMessageBox.warning(
                 self,
@@ -1382,12 +1460,32 @@ class CaseManagerDialog(QDialog):
             return
 
     def _after_delete_case(self, case_id: str, success: bool, deleted_folder: bool) -> None:
-        """案件删除后台任务完成后刷新界面。"""
+        """案件删除后台任务完成后刷新界面 — 增量更新，避免全量重建。"""
         if not success:
             QMessageBox.warning(self, "删除失败", "删除案件时出现问题。")
             return
-        self._selected_case_ids.clear()
-        self._load_cases()
+
+        # 1. 增量移除卡片（不触发全量 _load_cases）
+        if case_id in self._case_cards:
+            card = self._case_cards.pop(case_id)
+            self._list_layout.removeWidget(card)
+            card.deleteLater()
+        self._selected_case_ids.discard(case_id)
+
+        # 2. 清空详情面板（避免为自动选中的案件做全量 load_case）
+        self._detail_panel.clear()
+
+        # 3. 刷新标签过滤（带缓存，无变化时跳过）
+        self._refresh_tag_filters()
+        self._update_filter_summary()
+
+        # 4. 重建分组头 + 重排卡片
+        self._rebuild_group_headers()
+
+        # 5. 更新状态栏
+        cases = self._get_filtered_cases()
+        self._update_status_bar(cases)
+
         if deleted_folder:
             QMessageBox.information(self, "删除完成", "案件记录和真实文件夹已删除。")
 
@@ -1470,6 +1568,12 @@ class CaseManagerDialog(QDialog):
         self._load_cases()
 
     def _refresh_tag_filters(self) -> None:
+        # 标签缓存：标签没变化时跳过重建
+        new_tags = self._cm.get_all_tags()
+        if hasattr(self, "_cached_tags") and self._cached_tags == new_tags:
+            return
+        self._cached_tags = new_tags
+
         while self._tag_layout.count():
             item = self._tag_layout.takeAt(0)
             widget = item.widget()
@@ -1477,7 +1581,7 @@ class CaseManagerDialog(QDialog):
                 widget.deleteLater()
 
         self._tag_buttons = {}
-        tags = self._cm.get_all_tags()
+        tags = new_tags
         if self._selected_tag and self._selected_tag not in tags:
             self._selected_tag = ""
 
@@ -1628,8 +1732,96 @@ class CaseManagerDialog(QDialog):
             QMessageBox.warning(self, "路径不存在", "当前案件目录不存在，无法进行电子化归档。")
             return
 
-        dialog = ArchiveDialog(folder_path, self)
-        dialog.exec()
+        self._show_embed_page("电子化归档", ArchiveDialog(folder_path, embed_mode=True))
+
+    def _on_view_calendar(self) -> None:
+        """内嵌显示期限日历。"""
+        dialog = CalendarDialog(self, embed_mode=True)
+        self._show_embed_page("期限日历", dialog)
+
+    def _on_tool_center(self) -> None:
+        """内嵌显示工具中心。"""
+        dialog = ToolCenterDialog(self, initial_case_id=getattr(self._detail_panel, "_case_id", ""), embed_mode=True)
+        self._show_embed_page("工具中心", dialog)
+
+    def _show_embed_page(self, title: str, content_widget: QWidget) -> None:
+        """切换到指定功能的内嵌页面。"""
+        page = self._create_embed_page(title, content_widget)
+
+        # 清理旧的功能页面（保留第 0 页案件管理）
+        while self._main_stack.count() > 1:
+            old = self._main_stack.widget(1)
+            self._main_stack.removeWidget(old)
+            old.deleteLater()
+
+        self._main_stack.addWidget(page)
+        self._main_stack.setCurrentWidget(page)
+
+    def _create_embed_page(self, title: str, content_widget: QWidget) -> QWidget:
+        """创建带返回栏的内嵌页面。"""
+        c = COLORS
+        page = QWidget()
+        page.setStyleSheet(f"QWidget {{ background: {c['surface_1']}; }}")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 顶部返回栏
+        nav = QWidget()
+        nav.setFixedHeight(48)
+        nav.setStyleSheet(f"""
+            QWidget {{
+                background: {c['surface_0']};
+                border-bottom: 1px solid {c['border']};
+            }}
+        """)
+        nav_layout = QHBoxLayout(nav)
+        nav_layout.setContentsMargins(12, 0, 12, 0)
+        nav_layout.setSpacing(8)
+
+        btn_back = QPushButton("← 返回案件")
+        btn_back.setFixedHeight(32)
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_back.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {c['text_secondary']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                padding: 0 12px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {c['surface_2']};
+                color: {c['text_primary']};
+                border-color: {c['border_strong']};
+            }}
+        """)
+        btn_back.clicked.connect(self._back_to_case_page)
+        nav_layout.addWidget(btn_back)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"""
+            background: transparent;
+            color: {c['text_primary']};
+            font-size: 15px;
+            font-weight: 600;
+        """)
+        nav_layout.addWidget(title_label)
+        nav_layout.addStretch()
+
+        layout.addWidget(nav)
+        layout.addWidget(content_widget, 1)
+        return page
+
+    def _back_to_case_page(self) -> None:
+        """返回案件管理主页面。"""
+        self._main_stack.setCurrentWidget(self._case_page)
+        # 清理功能页面释放资源
+        while self._main_stack.count() > 1:
+            old = self._main_stack.widget(1)
+            self._main_stack.removeWidget(old)
+            old.deleteLater()
 
     def _on_open_folders_for_selected(self) -> None:
         """批量打开选中案件的文件夹。"""
@@ -1691,44 +1883,86 @@ class CaseManagerDialog(QDialog):
             QMessageBox.warning(self, "保存结果", f"成功更新 {len(self._selected_case_ids) - len(failed)} 个案件，{len(failed)} 个失败。")
 
     def _on_delete_selected_cases(self) -> None:
-        """批量删除选中的案件。"""
+        """删除选中的案件。"""
         count = len(self._selected_case_ids)
         if count == 0:
             return
 
+        # 统计有多少案件有真实文件夹
+        has_folder_count = 0
+        for cid in self._selected_case_ids:
+            case = self._cm.get_case(cid)
+            if case:
+                p = str(case.get("path", "")).strip()
+                if p and Path(p).exists():
+                    has_folder_count += 1
+
         box = QMessageBox(self)
-        box.setWindowTitle("批量删除案件")
+        box.setWindowTitle("删除案件")
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(f"确定要删除选中的 {count} 个案件吗？")
         box.setInformativeText("此操作只会从软件中剔除案件记录，不会删除真实文件夹。")
+
+        # 复选框：删除真实文件夹
+        delete_folder_cb = None
+        if has_folder_count > 0:
+            delete_folder_cb = QCheckBox(
+                f"同时删除真实文件夹（{has_folder_count} 个目录存在）", box
+            )
+            box.setCheckBox(delete_folder_cb)
+
         ok_btn = box.addButton("确定删除", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+
+        # 勾选时动态切换提示文字
+        def _on_checkbox_changed(checked):
+            if checked:
+                box.setInformativeText(
+                    "⚠️ 警告：勾选后将从磁盘永久删除对应的真实文件夹及其全部内容！\n"
+                    "此操作不可撤销，请确认已做好备份。"
+                )
+            else:
+                box.setInformativeText("此操作只会从软件中剔除案件记录，不会删除真实文件夹。")
+
+        if delete_folder_cb:
+            delete_folder_cb.stateChanged.connect(_on_checkbox_changed)
+
         box.exec()
 
         if box.clickedButton() is not ok_btn:
             return
 
+        delete_folder = bool(delete_folder_cb and delete_folder_cb.isChecked())
         case_ids = list(self._selected_case_ids)
 
-        def _delete_many() -> list:
-            failed = []
+        # 同步删除（文件夹删除通常也很快，避免 _run_case_operation_async 卡顿）
+        failed = []
+        for case_id in case_ids:
+            if not self._cm.remove_case(case_id, delete_folder=delete_folder):
+                failed.append(case_id)
             for case_id in case_ids:
                 if not self._cm.remove_case(case_id, delete_folder=False):
                     failed.append(case_id)
-            return failed
+            deleted_ids = set(case_ids) - set(failed)
+            self._update_after_delete(deleted_ids, failed, count)
 
-        def _after_delete_many(failed: list) -> None:
-            self._selected_case_ids.clear()
-            self._load_cases()
-            if failed:
-                QMessageBox.warning(self, "删除结果", f"成功删除 {count - len(failed)} 个案件，{len(failed)} 个失败。")
-
-        self._run_case_operation_async(
-            "批量删除案件",
-            f"正在剔除 {count} 个案件记录...",
-            _delete_many,
-            _after_delete_many,
-        )
+    def _update_after_delete(self, deleted_ids: set, failed: list, count: int) -> None:
+        """删除案件后的增量界面更新。"""
+        for cid in deleted_ids:
+            if cid in self._case_cards:
+                card = self._case_cards.pop(cid)
+                self._list_layout.removeWidget(card)
+                card.deleteLater()
+        self._selected_case_ids -= deleted_ids
+        if not self._selected_case_ids:
+            self._detail_panel.clear()
+        self._refresh_tag_filters()
+        self._update_filter_summary()
+        self._rebuild_group_headers()
+        cases = self._get_filtered_cases()
+        self._update_status_bar(cases)
+        if failed:
+            QMessageBox.warning(self, "删除结果", f"成功删除 {count - len(failed)} 个案件，{len(failed)} 个失败。")
 
     def _on_open_folder(self, folder_path: str) -> None:
         path = Path(folder_path)

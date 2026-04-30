@@ -48,13 +48,77 @@ DEFAULT_INFO_SECTION_TITLES = {
 _CORE_INFO_KEYS = {item["key"] for item in CORE_INFO_FIELD_DEFINITIONS}
 _CORE_INFO_BY_KEY = {item["key"]: item for item in CORE_INFO_FIELD_DEFINITIONS}
 _VARIABLE_TO_INFO_KEY = {
+    # 案号
     "case_number": "case_number",
+    # 案由
     "Cause_of_Action": "cause_of_action",
+    "crime_name": "cause_of_action",
+    # 当事人（我方委托人）
     "client_name": "party_name",
+    # 对方当事人（不同模板用不同变量名）
     "opponent_client_name": "opponent_name",
+    "opposing_party": "opponent_name",
+    "plaintiff_name": "opponent_name",
+    "defendant_agency": "opponent_name",
+    "employer_name": "opponent_name",
+    "respondent_name": "opponent_name",
+    "applicant_name": "opponent_name",
+    # 法院 / 仲裁委
     "court_name": "forum",
+    "court": "forum",
+    "arbitration_committee": "forum",
+    "arbitration_institution": "forum",
+    # 立案时间
     "filing_date": "filing_date",
+    # 承办律师
+    "lawyer_name": "handling_lawyer",
+    # 委托时间
+    "receive_date": "engagement_date",
+    # 律师费支付 → 收费情况
+    "payment": "fee_status",
 }
+
+_TEMPLATE_LITIGATION_ROLE = {
+    "civil_simple_001": "原告",
+    "civil_simple_002": "被告",
+    "criminal_simple_001": "__criminal__",  # 需要根据阶段判断
+    "admin_simple_001": "原告",
+    "admin_simple_002": "被告",
+    "labor_simple_001": "申请人",
+    "labor_simple_002": "被申请人",
+    "commercial_simple_001": "申请人",
+    "commercial_simple_002": "被申请人",
+}
+
+
+def _derive_litigation_role(
+    template_id: str, template_name: str, variables: Dict[str, Any]
+) -> str:
+    """根据模板 ID / 名称 / 变量推导诉讼地位。"""
+    role = _TEMPLATE_LITIGATION_ROLE.get(template_id, "")
+    if role == "__criminal__":
+        stage = str(variables.get("Case_adjudication_stage", "")).strip()
+        if any(kw in stage for kw in ("一审", "二审", "审判", "法院")):
+            return "被告人"
+        if any(kw in stage for kw in ("侦查", "审查起诉", "检")):
+            return "犯罪嫌疑人"
+        return "犯罪嫌疑人/被告人"
+    if role:
+        return role
+    # 名称关键词回退（用户自定义模板）
+    name = template_name or ""
+    if "被申请" in name:
+        return "被申请人"
+    if "申请" in name:
+        return "申请人"
+    if "被告" in name:
+        return "被告"
+    if "原告" in name:
+        return "原告"
+    if "刑事" in name or "辩护" in name:
+        return "犯罪嫌疑人/被告人"
+    return ""
+
 
 _INFO_SECTION_BY_KEY = {
     "engagement_date": "basic",
@@ -428,6 +492,7 @@ class CaseManager:
         normalized["path"] = str(normalized.get("path", "")).strip()
         normalized["category"] = str(normalized.get("category", "")).strip()
         normalized["template_id"] = str(normalized.get("template_id", "")).strip()
+        normalized["template_name"] = str(normalized.get("template_name", "")).strip()
         normalized["variables"] = dict(normalized.get("variables", {}) or {})
         normalized["notes"] = str(normalized.get("notes", "") or "")
         normalized["notes_secondary"] = str(normalized.get("notes_secondary", "") or "")
@@ -451,6 +516,21 @@ class CaseManager:
         normalized["info_section_titles"] = _normalize_info_section_titles(
             normalized.get("info_section_titles"),
         )
+
+        # 根据 template_id / template_name / variables 自动填充诉讼地位和委托角色
+        litigation_role = _derive_litigation_role(
+            normalized["template_id"],
+            normalized["template_name"],
+            normalized["variables"],
+        )
+        for field in normalized["info_fields"]:
+            if field.get("key") == "litigation_role" and not field.get("value"):
+                field["value"] = litigation_role
+                break
+        for field in normalized["info_fields"]:
+            if field.get("key") == "entrusted_role" and not field.get("value"):
+                field["value"] = "委托人"
+                break
 
         if not normalized["folder_status"]:
             normalized["folder_status"] = self._detect_folder_status(normalized["path"])

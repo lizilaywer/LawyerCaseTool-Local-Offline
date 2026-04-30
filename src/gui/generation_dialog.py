@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QMessageBox,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 
 from src.core.batch_processor import BatchProcessor
 from src.config.config_manager import get_config_manager
@@ -85,6 +85,7 @@ class GenerationDialog(QDialog):
         self._config_manager = get_config_manager()
         self._logger = get_logger()
         self._worker = None
+        self._registered_case_id = None  # 记录注册成功的案件 ID，用于跳转
 
         self._setup_ui()
 
@@ -95,11 +96,32 @@ class GenerationDialog(QDialog):
         self.setMinimumSize(560, 460)
         self.resize(680, 540)
         self.setModal(True)
-        self.setStyleSheet(f"QDialog {{ background: {c['surface_1']}; }}")
+        self.setStyleSheet(f"""
+            QDialog {{ background: {c['surface_1']}; }}
+            QGroupBox {{
+                background: {c['surface_0']};
+                border: 1px solid {c['border']};
+                border-radius: 16px;
+                margin-top: 0px;
+                padding: 12px 14px 14px 14px;
+                font-size: 12px;
+                font-weight: 700;
+                color: {c['text_primary']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: padding;
+                subcontrol-position: top left;
+                left: 14px;
+                top: 10px;
+                padding: 0 0px;
+                color: {c['text_primary']};
+                background: transparent;
+            }}
+        """)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(16)
+        layout.setSpacing(10)
 
         banner = QLabel("生成前可再次确认输出目录与案卷名称，进度和日志会在下方实时更新。")
         banner.setWordWrap(True)
@@ -110,7 +132,7 @@ class GenerationDialog(QDialog):
         dir_group = QGroupBox("输出目录")
         dir_group.setProperty("card", True)
         dir_layout = QHBoxLayout(dir_group)
-        dir_layout.setContentsMargins(16, 18, 16, 16)
+        dir_layout.setContentsMargins(16, 28, 16, 14)
 
         self._dir_label = QLabel()
         self._dir_label.setWordWrap(True)
@@ -140,7 +162,7 @@ class GenerationDialog(QDialog):
         info_group = QGroupBox("案卷信息")
         info_group.setProperty("card", True)
         info_layout = QVBoxLayout(info_group)
-        info_layout.setContentsMargins(16, 18, 16, 16)
+        info_layout.setContentsMargins(16, 28, 16, 14)
         info_layout.setSpacing(6)
 
         template_name = self._template_config.get("name", "")
@@ -166,7 +188,7 @@ class GenerationDialog(QDialog):
         progress_group = QGroupBox("生成进度")
         progress_group.setProperty("card", True)
         progress_layout = QVBoxLayout(progress_group)
-        progress_layout.setContentsMargins(16, 18, 16, 16)
+        progress_layout.setContentsMargins(16, 28, 16, 14)
         progress_layout.setSpacing(10)
 
         self._progress_bar = QProgressBar()
@@ -185,10 +207,10 @@ class GenerationDialog(QDialog):
 
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
-        self._log_text.setMaximumHeight(180)
-        progress_layout.addWidget(self._log_text)
+        self._log_text.setMinimumHeight(60)
+        progress_layout.addWidget(self._log_text, 1)
 
-        layout.addWidget(progress_group)
+        layout.addWidget(progress_group, 1)
 
         # 按钮
         btn_layout = QHBoxLayout()
@@ -249,12 +271,10 @@ class GenerationDialog(QDialog):
         self._log("开始生成案卷...")
 
     def _on_cancel(self) -> None:
-        """取消生成"""
-        if self._worker:
+        """取消 / 关闭对话框"""
+        if self._worker and self._worker.isRunning():
             self._worker.cancel()
-            self._cancel_btn.setEnabled(False)
-            self._status_label.setText("正在取消...")
-            self._log("正在取消...")
+        self.reject()
 
     def _on_progress(self, current: int, total: int, message: str) -> None:
         """进度更新"""
@@ -307,8 +327,17 @@ class GenerationDialog(QDialog):
                         'path': root_path,
                         'category': self._template_config.get("category", ""),
                         'template_id': self._template_config.get("id", ""),
+                        'template_name': self._template_config.get("name", ""),
                         'variables': self._values,
                     })
+                    # 查找刚注册的案件 ID
+                    case_info = cm.get_case_by_path(root_path)
+                    if case_info:
+                        case_id = case_info.get("id")
+                    else:
+                        case_id = None
+                    if case_id:
+                        self._registered_case_id = case_id
                     case_notes_dir = Path(root_path) / ".case"
                     case_notes_dir.mkdir(exist_ok=True)
                     notes_file = case_notes_dir / "notes.md"
@@ -317,11 +346,20 @@ class GenerationDialog(QDialog):
                 except Exception as e:
                     self._logger.warning(f"自动注册案件失败: {e}")
 
-            QMessageBox.information(
-                self,
-                "成功",
-                f"案卷已成功生成!\n\n位置: {result.get('root_path')}"
+            # 自定义消息框：含"确认并关闭"按钮
+            box = QMessageBox(self)
+            box.setWindowTitle("成功")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText("案卷已成功生成!")
+            box.setInformativeText(f"位置: {result.get('root_path')}")
+            confirm_and_close_btn = box.addButton(
+                "确认并关闭", QMessageBox.ButtonRole.AcceptRole
             )
+            box.addButton("确认", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+
+            if box.clickedButton() is confirm_and_close_btn:
+                self._navigate_to_case_and_close()
         else:
             self._status_label.setText("生成失败")
             self._log(f"错误: {result.get('error')}")
@@ -344,6 +382,28 @@ class GenerationDialog(QDialog):
     def _log(self, message: str) -> None:
         """添加日志"""
         self._log_text.append(message)
+
+    def _navigate_to_case_and_close(self) -> None:
+        """关闭生成对话框并跳转到案件中心，定位到刚创建的案件。"""
+        case_id = self._registered_case_id
+        self.accept()  # 关闭生成对话框
+
+        if not case_id:
+            return
+
+        # 获取主窗口并跳转到案件中心
+        main_window = self.parent()
+        if main_window is None:
+            return
+
+        # 延迟执行，等对话框关闭后再跳转
+        def _do_navigate():
+            main_window._case_center._sync_navigation_filter_state()
+            main_window._case_center._selected_case_ids = {case_id}
+            main_window._case_center._load_cases()
+            main_window._switch_page("cases")
+
+        QTimer.singleShot(50, _do_navigate)
 
     def closeEvent(self, event) -> None:
         """关闭事件"""

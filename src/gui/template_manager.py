@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QAbstractItemView,
     QFrame,
+    QTabWidget,
 )
 from PySide6.QtCore import Qt
 
@@ -823,15 +824,20 @@ class TemplateEditor(QWidget):
 
 
 class TemplateManagerDialog(QDialog):
-    """模板管理对话框 - Modern UI v3"""
+    """模板管理对话框 - Modern UI v3，含模板管理与模板制作两个标签页"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial_tab: str = "manage"):
         super().__init__(parent)
         self._config_manager = get_config_manager()
         self._logger = get_logger()
         self._templates: List[Dict[str, Any]] = []
+        self._initial_tab = initial_tab
         self._setup_ui()
         self._load_templates()
+
+        # 切换到指定标签页
+        if initial_tab == "maker":
+            self._tab_widget.setCurrentIndex(1)
 
     def _create_btn(self, text: str, primary: bool = False) -> QPushButton:
         """创建统一风格的按钮"""
@@ -842,21 +848,79 @@ class TemplateManagerDialog(QDialog):
         return btn
 
     def _setup_ui(self) -> None:
-        """设置界面 - 增强视觉层次"""
+        """设置界面 - 标签页布局"""
         c = COLORS
         self.setWindowTitle("模板管理")
-        self.setMinimumSize(1000, 700)
-        # 对话框背景与表面色一致
+        self.setMinimumSize(1200, 750)
         self.setStyleSheet(f"QDialog {{ background-color: {c['surface_1']}; }}")
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(18, 18, 18, 18)
-        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
+
+        # 标签页控件
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: 1px solid {c['border']};
+                border-radius: 12px;
+                background: {c['surface_0']};
+            }}
+            QTabBar::tab {{
+                background: {c['surface_1']};
+                border: 1px solid {c['border']};
+                border-bottom: none;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                padding: 8px 24px;
+                margin-right: 2px;
+                font-size: 13px;
+                font-weight: 600;
+                color: {c['text_secondary']};
+            }}
+            QTabBar::tab:selected {{
+                background: {c['surface_0']};
+                color: {c['text_primary']};
+                border-bottom: 2px solid {c['accent']};
+            }}
+            QTabBar::tab:hover {{
+                background: {c['surface_2']};
+            }}
+        """)
+
+        # === Tab 1: 模板管理 ===
+        manage_page = self._create_manage_page()
+        self._tab_widget.addTab(manage_page, "模板管理")
+
+        # === Tab 2: 模板制作 ===
+        from src.gui.template_maker import TemplateMakerWidget
+        self._maker_widget = TemplateMakerWidget()
+        self._tab_widget.addTab(self._maker_widget, "模板制作")
+
+        main_layout.addWidget(self._tab_widget, 1)
+
+        # 底部按钮
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addStretch()
+
+        close_btn = self._create_btn("关闭")
+        close_btn.clicked.connect(self._on_close)
+        bottom_layout.addWidget(close_btn)
+
+        main_layout.addLayout(bottom_layout)
+
+    def _create_manage_page(self) -> QWidget:
+        """创建模板管理标签页内容"""
+        c = COLORS
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 10, 0, 0)
+        page_layout.setSpacing(14)
 
         intro_label = QLabel("统一维护模板的基础信息、文件夹结构、变量定义和关联 Word 文件。")
         intro_label.setWordWrap(True)
         intro_label.setStyleSheet(hint_banner_style("info"))
-        main_layout.addWidget(intro_label)
+        page_layout.addWidget(intro_label)
 
         # 内容区域
         content_layout = QHBoxLayout()
@@ -959,21 +1023,34 @@ class TemplateManagerDialog(QDialog):
         right_layout.addWidget(self._editor, 1)
 
         content_layout.addWidget(right_panel, 2)
-        main_layout.addLayout(content_layout, 1)
+        page_layout.addLayout(content_layout, 1)
 
-        # 底部按钮
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addStretch()
-
+        # 保存按钮
+        save_row = QHBoxLayout()
+        save_row.addStretch()
         save_btn = self._create_btn("保存", primary=True)
         save_btn.clicked.connect(self._on_save)
-        bottom_layout.addWidget(save_btn)
+        save_row.addWidget(save_btn)
+        page_layout.addLayout(save_row)
 
-        close_btn = self._create_btn("关闭")
-        close_btn.clicked.connect(self.accept)
-        bottom_layout.addWidget(close_btn)
+        return page
 
-        main_layout.addLayout(bottom_layout)
+    def _on_close(self) -> None:
+        """关闭对话框，检查模板制作器的未保存更改"""
+        if hasattr(self, '_maker_widget') and not self._maker_widget.check_unsaved_changes():
+            return
+        if hasattr(self, '_maker_widget'):
+            self._maker_widget.cleanup()
+        self.accept()
+
+    def closeEvent(self, event) -> None:
+        """重写关闭事件，检查未保存更改"""
+        if hasattr(self, '_maker_widget') and not self._maker_widget.check_unsaved_changes():
+            event.ignore()
+            return
+        if hasattr(self, '_maker_widget'):
+            self._maker_widget.cleanup()
+        event.accept()
 
     def _load_templates(self) -> None:
         """加载模板列表"""

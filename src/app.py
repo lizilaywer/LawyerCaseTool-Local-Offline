@@ -72,7 +72,7 @@ class Application:
         self._qt_app.setApplicationName("案件文件夹管理系统 LEXORA")
         self._qt_app.setApplicationDisplayName("案件文件夹管理系统 LEXORA")
         self._qt_app.setApplicationVersion(get_version())
-        self._qt_app.setOrganizationName("CaseFolderManager")
+        self._qt_app.setOrganizationName("汪立")
 
         # 设置默认字体
         font = QFont(get_default_ui_font_family(), 9)

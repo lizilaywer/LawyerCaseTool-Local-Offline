@@ -5,6 +5,7 @@
 """
 
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QAbstractItemView,
+    QApplication,
     QMenu,
     QMessageBox,
     QInputDialog,
@@ -21,6 +23,7 @@ from PySide6.QtCore import Qt, Signal, QTimer, QSize, QObject, QThread
 from PySide6.QtGui import QAction, QKeyEvent
 
 from src.utils.logger import get_logger
+from src.utils.platform_utils import is_windows, is_macos, open_path
 from src.gui.styles import APP_COLORS as COLORS
 from src.gui.icon_utils import get_standard_icon
 
@@ -147,6 +150,8 @@ class ArchiveFileTree(QTreeWidget):
         self.itemExpanded.connect(self._on_item_expanded)
         self.itemCollapsed.connect(self._on_item_collapsed)
         self.currentItemChanged.connect(self._on_current_item_changed)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
     def set_lazy_mode(self, enabled: bool = True) -> None:
         """设置懒加载模式。启用后仅展开时加载子目录，提升大目录性能。"""
@@ -652,6 +657,137 @@ class ArchiveFileTree(QTreeWidget):
         finally:
             # 恢复信号连接
             self.itemChanged.connect(self._on_item_renamed)
+
+    def _show_context_menu(self, position) -> None:
+        """右键菜单：打开、打开所在位置、重命名、删除、复制路径。"""
+        item = self.itemAt(position)
+        if not item:
+            return
+
+        user_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not user_data:
+            return
+
+        item_type = user_data.get("type", "")
+        path_str = user_data.get("path", "")
+        if not path_str or item_type not in ("file", "folder"):
+            return
+
+        path_obj = Path(path_str)
+        if not path_obj.exists():
+            return
+
+        menu = QMenu(self)
+        c = COLORS
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {c['surface_0']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 24px 6px 12px;
+                border-radius: 4px;
+                color: {c['text_secondary']};
+            }}
+            QMenu::item:selected {{
+                background-color: {c['accent_light']};
+                color: {c['accent']};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background-color: {c['border']};
+                margin: 4px 8px;
+            }}
+        """)
+
+        # 1. 打开
+        action_open = QAction("打开", self)
+        action_open.triggered.connect(lambda: self._open_item(path_obj, item_type))
+        menu.addAction(action_open)
+
+        # 2. 打开文件所在的位置（仅文件）
+        if item_type == "file":
+            action_open_parent = QAction("打开文件所在的位置", self)
+            action_open_parent.triggered.connect(lambda: self._open_parent_folder(path_obj))
+            menu.addAction(action_open_parent)
+
+        menu.addSeparator()
+
+        # 3. 重命名
+        action_rename = QAction("重命名", self)
+        action_rename.triggered.connect(lambda: self.editItem(item, 0))
+        menu.addAction(action_rename)
+
+        # 4. 删除
+        action_delete = QAction("删除", self)
+        action_delete.triggered.connect(lambda: self._delete_item(path_obj, item_type))
+        menu.addAction(action_delete)
+
+        menu.addSeparator()
+
+        # 5. 获取绝对路径（自动复制）
+        action_copy_path = QAction("获取绝对路径", self)
+        action_copy_path.triggered.connect(lambda: self._copy_item_path(path_obj))
+        menu.addAction(action_copy_path)
+
+        menu.exec_(self.viewport().mapToGlobal(position))
+
+    def _open_item(self, path_obj: Path, item_type: str) -> None:
+        """打开文件或文件夹。"""
+        if item_type == "file":
+            self.file_double_clicked.emit(path_obj)
+        else:
+            self.folder_double_clicked.emit(path_obj)
+
+    def _open_parent_folder(self, path_obj: Path) -> None:
+        """在系统文件管理器中打开父文件夹并选中该文件。"""
+        try:
+            if is_macos():
+                subprocess.Popen(["open", "-R", str(path_obj)])
+            elif is_windows():
+                subprocess.Popen(["explorer", "/select,", str(path_obj)])
+            else:
+                # Linux 退化为打开父文件夹
+                open_path(path_obj.parent)
+        except Exception as e:
+            self._logger.error(f"打开所在位置失败: {e}")
+            QMessageBox.warning(self, "打开失败", str(e))
+
+    def _delete_item(self, path_obj: Path, item_type: str) -> None:
+        """删除文件或文件夹（真实删除）。"""
+        name = path_obj.name
+        if item_type == "file":
+            msg = f"确定要删除文件『{name}』吗？\n此操作不可恢复。"
+        else:
+            msg = f"确定要删除文件夹『{name}』及其所有内容吗？\n此操作不可恢复。"
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            if item_type == "file":
+                path_obj.unlink()
+            else:
+                shutil.rmtree(str(path_obj))
+            self._logger.info(f"删除: {path_obj}")
+            self.refresh()
+            self.structure_changed.emit()
+        except Exception as e:
+            self._logger.error(f"删除失败: {e}")
+            QMessageBox.warning(self, "删除失败", str(e))
+
+    def _copy_item_path(self, path_obj: Path) -> None:
+        """复制绝对路径到剪贴板。"""
+        QApplication.clipboard().setText(str(path_obj))
 
     def refresh(self) -> None:
         """刷新当前结构"""

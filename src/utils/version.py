@@ -30,5 +30,5 @@ def get_version() -> str:
         return _VERSION
     except Exception:
         # 如果读取失败，返回默认版本号
-        _VERSION = '2.0.0'
+        _VERSION = '2.1.0'
         return _VERSION

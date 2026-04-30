@@ -78,6 +78,8 @@ from src.core.legal_toolkit import (
     money,
 )
 from src.gui.styles import APP_COLORS as COLORS, CHECK_ICON_PATH
+from src.gui.widgets.docx_compare_widget import DocxCompareWidget
+from src.gui.widgets.docx_auto_format_widget import DocxAutoFormatWidget
 from src.gui.window_metrics import APP_SURFACE_DEFAULT_SIZE, APP_SURFACE_MIN_SIZE
 from src.gui.widgets.transparent_form_layout import TransparentFormLayout
 
@@ -139,6 +141,27 @@ class _CourtSmsAnalyzeWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _CourtSmsFileUploadWorker(QThread):
+    """在后台线程处理上传的 PDF/图片文件，提取文本并识别庭审信息。"""
+
+    finished = Signal(object, object)  # documents, hearing_notices
+    error = Signal(str)
+
+    def __init__(self, service, file_paths: List[str]):
+        super().__init__()
+        self.service = service
+        self.file_paths = file_paths
+
+    def run(self):
+        try:
+            documents, hearing_notices = self.service.extract_text_and_hearing_notices_from_files(
+                self.file_paths
+            )
+            self.finished.emit(documents, hearing_notices)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class ToolCenterDialog(QDialog):
     """统一风格的法律工具中心。"""
 
@@ -189,6 +212,7 @@ class ToolCenterDialog(QDialog):
         # 法院短信后台线程引用（防止 GC 导致崩溃）
         self._court_sms_read_worker: Optional[QThread] = None
         self._court_sms_analyze_worker: Optional[QThread] = None
+        self._court_sms_upload_worker: Optional[QThread] = None
 
         self._setup_ui()
         self._bind_defaults()
@@ -264,6 +288,8 @@ class ToolCenterDialog(QDialog):
         self._tabs.addTab(self._build_procedure_tab(), "程序")
         self._tabs.addTab(self._build_reference_tab(), "参考与导航")
         self._tabs.addTab(self._build_screenshot_merge_tab(), "截图合并")
+        self._tabs.addTab(self._build_docx_compare_tab(), "文档对比")
+        self._tabs.addTab(self._build_auto_format_tab(), "自动排版")
 
     def _build_court_sms_unavailable_tab(self) -> QWidget:
         def populate(layout: QVBoxLayout) -> None:
@@ -621,16 +647,21 @@ class ToolCenterDialog(QDialog):
     def _build_court_sms_input_card(self) -> QWidget:
         card, layout = self._create_card(
             "法院短信读取",
-            "粘贴短信后自动解析案号、法院、收件人和链接参数，并读取送达文书。",
+            "粘贴短信后自动解析案号、法院、收件人和链接参数，并读取送达文书。"
+            "也可直接拖拽或上传传票 PDF/图片，自动识别开庭信息。",
         )
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
         self._court_sms_input = self._make_multiline_edit(
-            "示例：\n【石台县人民法院】曹忠发，石台县人民法院向您发送了（2026）皖1722民初273号案件相关文书，请及时签收。点击链接查阅：https://zxfw.court.gov.cn/...",
+            "粘贴法院短信到此处，或直接拖拽传票 PDF/图片文件到此框内…",
             min_height=108,
         )
         self._court_sms_input.setMaximumHeight(126)
+        self._court_sms_input.setAcceptDrops(True)
+        self._court_sms_input.installEventFilter(self)
+        # QTextEdit 的 viewport 才是实际接收拖放事件的控件
+        self._court_sms_input.viewport().installEventFilter(self)
         layout.addWidget(self._court_sms_input)
 
         action_row = QHBoxLayout()
@@ -648,6 +679,12 @@ class ToolCenterDialog(QDialog):
         clear_btn.clicked.connect(self._clear_court_sms_state)
         action_row.addWidget(clear_btn)
         self._btn_clear_court_sms = clear_btn
+
+        upload_btn = self._make_button("上传文件/图片")
+        upload_btn.clicked.connect(self._on_court_sms_upload_files)
+        action_row.addWidget(upload_btn)
+        self._btn_upload_court_sms = upload_btn
+
         action_row.addStretch()
         layout.addLayout(action_row)
 
@@ -785,7 +822,7 @@ class ToolCenterDialog(QDialog):
         layout.setSpacing(8)
 
         self._court_sms_hearing_tree = self._make_tree_widget(
-            ["文书", "类型", "开庭时间", "地点", "状态"],
+            ["文书", "类型", "被传唤人", "开庭时间", "地点", "状态"],
             min_height=92,
         )
         self._court_sms_hearing_tree.setMaximumHeight(118)
@@ -798,6 +835,65 @@ class ToolCenterDialog(QDialog):
         self._court_sms_hearing_browser = self._make_result_browser(122, max_height=150)
         layout.addWidget(self._court_sms_hearing_browser)
 
+        # 可编辑字段表单（双击编辑）
+        self._hearing_edit_frame = QFrame()
+        self._hearing_edit_frame.hide()
+        edit_layout = QVBoxLayout(self._hearing_edit_frame)
+        edit_layout.setContentsMargins(0, 6, 0, 0)
+        edit_layout.setSpacing(4)
+
+        edit_hint = QLabel('双击字段可编辑，修改后点击"加入期限"生效')
+        edit_hint.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 10px; background: transparent; border: none;")
+        edit_layout.addWidget(edit_hint)
+
+        self._hearing_edit_fields = {}
+        _EDITABLE_FIELDS = [
+            ("case_number", "案号"),
+            ("summoned_person", "被传唤人"),
+            ("hearing_date", "开庭日期"),
+            ("hearing_time", "开庭时间"),
+            ("hearing_place", "开庭地点"),
+            ("cause", "案由"),
+            ("court_name", "法院"),
+        ]
+        for field_key, field_label in _EDITABLE_FIELDS:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            label = QLabel(f"{field_label}：")
+            label.setFixedWidth(70)
+            label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px; background: transparent; border: none;")
+            row.addWidget(label)
+
+            value_label = QLabel("")
+            value_label.setStyleSheet(f"color: {COLORS['text_primary']}; font-size: 12px; font-weight: 500; background: transparent; border: none; padding: 2px 4px; border-radius: 4px;")
+            value_label.setCursor(Qt.CursorShape.IBeamCursor)
+            value_label.setToolTip(f"双击编辑{field_label}")
+            value_label.setWordWrap(True)
+            row.addWidget(value_label, 1)
+
+            value_edit = QLineEdit()
+            value_edit.hide()
+            value_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background: {COLORS['surface_0']};
+                    color: {COLORS['text_primary']};
+                    border: 1px solid {COLORS['accent']};
+                    border-radius: 6px;
+                    padding: 2px 6px;
+                    font-size: 12px;
+                }}
+            """)
+            row.addWidget(value_edit, 1)
+
+            # 双击切换编辑
+            value_label.mouseDoubleClickEvent = lambda ev, lbl=value_label, edt=value_edit: self._toggle_hearing_field_edit(lbl, edt)
+            value_edit.editingFinished.connect(lambda lbl=value_label, edt=value_edit: self._finish_hearing_field_edit(lbl, edt))
+
+            edit_layout.addLayout(row)
+            self._hearing_edit_fields[field_key] = (value_label, value_edit)
+
+        layout.addWidget(self._hearing_edit_frame)
+
         action_row = QHBoxLayout()
         action_row.setSpacing(6)
         self._btn_refresh_court_sms_hearing = self._make_button("重新识别")
@@ -807,6 +903,11 @@ class ToolCenterDialog(QDialog):
         self._btn_add_court_sms_hearing_deadline = self._make_button("加入期限", accent=True)
         self._btn_add_court_sms_hearing_deadline.clicked.connect(self._add_selected_court_sms_hearing_deadline)
         action_row.addWidget(self._btn_add_court_sms_hearing_deadline)
+
+        self._btn_unlink_court_sms_case = self._make_button("不关联案件")
+        self._btn_unlink_court_sms_case.setToolTip("不关联到具体案件，仅将文书保存到自定义文件夹")
+        self._btn_unlink_court_sms_case.clicked.connect(self._on_unlink_court_sms_case)
+        action_row.addWidget(self._btn_unlink_court_sms_case)
 
         self._btn_open_court_sms_case = self._make_button("回到案件")
         self._btn_open_court_sms_case.clicked.connect(self._open_court_sms_case_from_hearing)
@@ -825,6 +926,7 @@ class ToolCenterDialog(QDialog):
         return card
 
     def eventFilter(self, watched, event):  # type: ignore[override]
+        # 案件搜索 combo 点击
         combo = getattr(self, "_court_sms_case_combo", None)
         line_edit = combo.lineEdit() if combo else None
         if (
@@ -834,6 +936,35 @@ class ToolCenterDialog(QDialog):
             and not self._court_sms_custom_save.isChecked()
         ):
             self._begin_court_sms_case_search()
+
+        # 法院短信输入框拖拽文件（QTextEdit 本体 + viewport 都要拦截）
+        sms_input = getattr(self, "_court_sms_input", None)
+        sms_viewport = sms_input.viewport() if sms_input else None
+        if sms_input and (watched is sms_input or watched is sms_viewport):
+            if event.type() == QEvent.Type.DragEnter:
+                mime = event.mimeData()
+                if mime.hasUrls():
+                    urls = mime.urls()
+                    if any(u.toLocalFile().lower().endswith(
+                        (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+                    ) for u in urls):
+                        event.acceptProposedAction()
+                        return True
+            elif event.type() == QEvent.Type.DragMove:
+                event.acceptProposedAction()
+                return True
+            elif event.type() == QEvent.Type.Drop:
+                mime = event.mimeData()
+                paths = [
+                    u.toLocalFile() for u in mime.urls()
+                    if u.toLocalFile().lower().endswith(
+                        (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+                    )
+                ]
+                if paths:
+                    self._process_uploaded_court_sms_files(paths)
+                    return True
+
         return super().eventFilter(watched, event)
 
     def _build_litigation_fee_card(self) -> QWidget:
@@ -1420,10 +1551,55 @@ class ToolCenterDialog(QDialog):
             self._court_sms_custom_dir.setEnabled(enabled)
         if hasattr(self, "_court_sms_custom_dir_btn"):
             self._court_sms_custom_dir_btn.setEnabled(enabled)
+        if hasattr(self, "_btn_unlink_court_sms_case"):
+            self._btn_unlink_court_sms_case.setEnabled(not enabled)
         if not enabled and self._court_sms_case_options:
             self._populate_court_sms_case_combo(selected_case_id=self._court_sms_selected_case_id)
         self._update_court_sms_case_hint()
         self._refresh_court_sms_match_preview()
+
+    def _on_unlink_court_sms_case(self) -> None:
+        """点击'不关联案件'：勾选自定义保存，默认保存到桌面。"""
+        if hasattr(self, "_court_sms_custom_save"):
+            self._court_sms_custom_save.setChecked(True)
+        desktop = str(Path.home() / "Desktop")
+        if hasattr(self, "_court_sms_custom_dir"):
+            self._court_sms_custom_dir.setText(desktop)
+
+    def _toggle_hearing_field_edit(self, label: QLabel, line_edit: QLineEdit) -> None:
+        """双击标签时切换为编辑模式。"""
+        label.setVisible(False)
+        line_edit.setText(label.text() if label.text() != "未识别" else "")
+        line_edit.setVisible(True)
+        line_edit.setFocus()
+        line_edit.selectAll()
+
+    def _finish_hearing_field_edit(self, label: QLabel, line_edit: QLineEdit) -> None:
+        """编辑完成后切回显示模式。"""
+        new_val = line_edit.text().strip()
+        label.setText(new_val or "未识别")
+        line_edit.setVisible(False)
+        label.setVisible(True)
+
+    def _sync_hearing_edit_fields_to_notice(self, notice: CourtSmsHearingNotice) -> None:
+        """将可编辑字段中的当前值写回到 notice 对象。"""
+        if not hasattr(self, "_hearing_edit_fields"):
+            return
+        _FIELD_ATTR = {
+            "case_number": "case_number",
+            "summoned_person": "summoned_person",
+            "hearing_date": "hearing_date",
+            "hearing_time": "hearing_time",
+            "hearing_place": "hearing_place",
+            "cause": "cause",
+            "court_name": "court_name",
+        }
+        for key, attr in _FIELD_ATTR.items():
+            lbl, edt = self._hearing_edit_fields[key]
+            val = edt.text().strip() if edt.isVisible() else lbl.text().strip()
+            if val == "未识别":
+                val = ""
+            setattr(notice, attr, val)
 
     def _choose_court_sms_custom_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -1442,13 +1618,126 @@ class ToolCenterDialog(QDialog):
             return
         self._court_sms_input.setPlainText(text)
 
+    # ------------------------------------------------------------------
+    # 文件上传（PDF/图片）
+    # ------------------------------------------------------------------
+
+    def _on_court_sms_upload_files(self) -> None:
+        """通过文件对话框选择 PDF/图片文件。"""
+        if self._has_active_background_workers():
+            QMessageBox.information(self, "请稍候", "当前仍有后台任务正在进行，请等待完成后再继续操作。")
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择传票或法院文书文件", "",
+            "法院文书 (*.pdf *.jpg *.jpeg *.png *.bmp *.tiff *.tif);;PDF 文件 (*.pdf);;图片文件 (*.jpg *.jpeg *.png *.bmp);;所有文件 (*)",
+        )
+        if paths:
+            self._process_uploaded_court_sms_files(paths)
+
+    def _process_uploaded_court_sms_files(self, file_paths: List[str]) -> None:
+        """启动后台线程处理上传的文件。"""
+        if self._has_active_background_workers():
+            QMessageBox.information(self, "请稍候", "当前仍有后台任务正在进行，请等待完成后再继续操作。")
+            return
+
+        if not self._court_sms_available:
+            QMessageBox.warning(self, "服务不可用", "法院短信服务依赖未就绪，无法解析文件。")
+            return
+
+        # 清空之前的 SMS 解析状态，但保留案件匹配信息
+        self._sms_documents = []
+        self._sms_hearing_notices = []
+        self._sms_parse_result = None
+        self._sms_download_dir = None
+        self._court_sms_doc_tree.clear()
+        self._court_sms_hearing_tree.clear()
+
+        self._court_sms_summary.setHtml(
+            "<p><b>状态</b>：正在识别上传的文件，请稍候…</p>"
+        )
+        self._court_sms_doc_hint.setText("正在识别上传的文件…")
+        self._court_sms_hearing_hint.setText("正在识别庭审信息…")
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self._sync_court_sms_busy_state()
+
+        self._court_sms_upload_worker = _CourtSmsFileUploadWorker(
+            self._court_sms_service, file_paths
+        )
+        self._court_sms_upload_worker.finished.connect(self._on_court_sms_file_upload_finished)
+        self._court_sms_upload_worker.error.connect(self._on_court_sms_file_upload_error)
+        self._court_sms_upload_worker.start()
+
+    def _on_court_sms_file_upload_finished(
+        self, documents: List, hearing_notices: List
+    ) -> None:
+        """文件上传解析完成回调。"""
+        worker = self._court_sms_upload_worker
+        self._court_sms_upload_worker = None
+        QApplication.restoreOverrideCursor()
+
+        self._sms_documents = documents
+        self._sms_hearing_notices = hearing_notices
+
+        # 更新文书列表
+        self._populate_court_sms_documents()
+        # 更新庭审识别
+        self._populate_court_sms_hearing_notices()
+        # 更新案件匹配
+        self._refresh_case_matches()
+
+        # 更新摘要
+        file_count = len(documents)
+        hearing_count = len(hearing_notices)
+        summary_html = f"<p><b>上传文件</b>：{file_count} 份</p>"
+        if hearing_count > 0:
+            summary_html += f"<p><b>识别到庭审信息</b>：{hearing_count} 条</p>"
+            for notice in hearing_notices:
+                summary_html += (
+                    f"<p>  - {notice.notice_type or '文书'}：{notice.case_number or '未知案号'} "
+                    f"| 被传唤人：{notice.summoned_person or '未知'}"
+                    f"| {notice.display_time} | {notice.hearing_place or '未知地点'}</p>"
+                )
+        else:
+            summary_html += '<p><b>识别结果</b>：未发现传票或出庭通知。如文件包含开庭信息，可点击"重新识别"重试。</p>'
+        self._court_sms_summary.setHtml(summary_html)
+
+        self._court_sms_store_result.setHtml(
+            '<p>文件已识别。请核对建议案件与保存目录后，点击"确认存放到案件"。</p>'
+            if documents else
+            "<p>未识别到有效文书文件。</p>"
+        )
+
+        self._sync_court_sms_busy_state()
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_court_sms_file_upload_error(self, error_msg: str) -> None:
+        """文件上传解析失败回调。"""
+        worker = self._court_sms_upload_worker
+        self._court_sms_upload_worker = None
+        QApplication.restoreOverrideCursor()
+        self._sync_court_sms_busy_state()
+        if worker is not None:
+            worker.deleteLater()
+        self._court_sms_doc_hint.setText("文件识别失败。")
+        self._court_sms_summary.setHtml(f"<p><b>识别失败</b>：{error_msg}</p>")
+        QMessageBox.warning(self, "文件识别失败", error_msg)
+
     def _parse_court_sms_only(self) -> None:
         if self._has_active_background_workers():
             QMessageBox.information(self, "请稍候", "当前仍有后台任务正在进行，请等待完成后再继续操作。")
             return
         sms_text = self._court_sms_input.toPlainText().strip()
+
+        # 检测输入是否为文件路径（拖拽文件场景）
+        file_paths = self._extract_file_paths_from_text(sms_text)
+        if file_paths:
+            self._process_uploaded_court_sms_files(file_paths)
+            return
+
         if not sms_text:
-            QMessageBox.information(self, "请先粘贴短信", "先把法院短信完整粘贴到输入区，再开始智能解析并读取。")
+            QMessageBox.information(self, "请先输入内容", "请粘贴法院短信或拖拽传票 PDF/图片到输入框，再开始智能解析并读取。")
             return
         try:
             parsed = self._court_sms_service.parse_sms(sms_text)
@@ -1487,6 +1776,31 @@ class ToolCenterDialog(QDialog):
         self._read_and_stage_court_documents(pre_parsed=parsed)
         self._populate_court_sms_hearing_notices()
         self._refresh_case_matches()
+
+    @staticmethod
+    def _extract_file_paths_from_text(text: str) -> List[str]:
+        """从文本中提取存在的文件路径（拖拽文件场景）。
+
+        支持格式：纯路径、file:// URL、富文本中的路径。
+        """
+        from urllib.parse import unquote, urlparse
+        _FILE_EXTS = (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+        paths = []
+        for line in text.replace("\r\n", "\n").split("\n"):
+            line = line.strip().strip('"').strip("'")
+            if not line:
+                continue
+            # 处理 file:// URL
+            if line.startswith("file://"):
+                try:
+                    parsed_url = urlparse(line)
+                    line = unquote(parsed_url.path)
+                except Exception:
+                    pass
+            p = Path(line)
+            if p.exists() and p.is_file() and p.suffix.lower() in _FILE_EXTS:
+                paths.append(str(p))
+        return paths
 
     def _on_court_sms_read_finished(self, parsed, documents, download_dir, hearing_notices) -> None:
         """后台读取法院文书完成后的回调。"""
@@ -1621,6 +1935,7 @@ class ToolCenterDialog(QDialog):
             for worker in (
                 self._court_sms_read_worker,
                 self._court_sms_analyze_worker,
+                self._court_sms_upload_worker,
                 self._screenshot_merge_worker,
             )
         )
@@ -1628,11 +1943,14 @@ class ToolCenterDialog(QDialog):
     def _sync_court_sms_busy_state(self) -> None:
         reading = self._has_running_worker(self._court_sms_read_worker)
         analyzing = self._has_running_worker(self._court_sms_analyze_worker)
-        busy = reading or analyzing
+        uploading = self._has_running_worker(self._court_sms_upload_worker)
+        busy = reading or analyzing or uploading
         if hasattr(self, "_btn_parse_court_sms"):
             self._btn_parse_court_sms.setEnabled(not busy)
         if hasattr(self, "_btn_clear_court_sms"):
             self._btn_clear_court_sms.setEnabled(not busy)
+        if hasattr(self, "_btn_upload_court_sms"):
+            self._btn_upload_court_sms.setEnabled(not busy)
         if hasattr(self, "_btn_refresh_court_sms_hearing"):
             can_refresh = bool(self._sms_documents) and not busy
             self._btn_refresh_court_sms_hearing.setEnabled(can_refresh)
@@ -1646,6 +1964,7 @@ class ToolCenterDialog(QDialog):
             item = QTreeWidgetItem([
                 notice.document_name,
                 notice.notice_type or "庭审文书",
+                notice.summoned_person or "未识别",
                 notice.display_time,
                 notice.hearing_place or "未识别",
                 self._court_sms_hearing_notice_status(notice)[0],
@@ -1669,8 +1988,20 @@ class ToolCenterDialog(QDialog):
         self._refresh_court_sms_hearing_preview()
 
     def _refresh_case_matches(self) -> None:
-        if not self._sms_parse_result:
+        if not self._sms_parse_result and not self._sms_hearing_notices:
+            # 没有 SMS 解析结果也没有庭审识别，尝试展示全部案件供手动选择
+            self._populate_court_sms_case_combo_for_upload()
             return
+
+        # 上传文件场景：从庭审通知构造合成 parse_result 进行匹配
+        if not self._sms_parse_result and self._sms_hearing_notices:
+            first = self._sms_hearing_notices[0]
+            self._sms_parse_result = CourtSmsParseResult(
+                raw_text="",
+                link="",
+                case_number=first.case_number or "",
+                court_name=first.court_name or "",
+            )
 
         cases = self._case_manager.get_all_cases()
         self._sms_matches = self._court_sms_service.match_cases(
@@ -1740,6 +2071,26 @@ class ToolCenterDialog(QDialog):
 
         self._populate_court_sms_case_combo(selected_case_id=selected_case_id)
         self._refresh_court_sms_match_preview()
+
+    def _populate_court_sms_case_combo_for_upload(self) -> None:
+        """上传文件但没有匹配线索时，列出全部案件供手动选择。"""
+        cases = self._case_manager.get_all_cases()
+        self._court_sms_case_options = []
+        for case in cases:
+            case_id = str(case.get("id", "")).strip()
+            if not case_id:
+                continue
+            self._court_sms_case_options.append({
+                "case_id": case_id,
+                "display": f"{case.get('name', '')}  ·  案件项目",
+                "search": case.get("name", ""),
+                "kind": "manual",
+                "score": "0",
+            })
+        self._populate_court_sms_case_combo(selected_case_id=self._initial_case_id)
+        self._court_sms_case_hint.setText(
+            "上传文件未自动匹配到案件，请手动选择或搜索案件。"
+        )
 
     def _populate_court_sms_case_combo(self, selected_case_id: str = "") -> None:
         combo = self._court_sms_case_combo
@@ -2072,6 +2423,8 @@ class ToolCenterDialog(QDialog):
             self._court_sms_hearing_browser.setHtml(
                 "<p>尚未识别到庭审文书。点击“智能解析并读取”后，若文书中包含传票或出庭通知书，这里会展示可加入期限的开庭提醒。</p>"
             )
+            if hasattr(self, "_hearing_edit_frame"):
+                self._hearing_edit_frame.hide()
             if hasattr(self, "_btn_add_court_sms_hearing_deadline"):
                 self._btn_add_court_sms_hearing_deadline.setEnabled(False)
             self._refresh_court_sms_hearing_action_buttons(None)
@@ -2081,23 +2434,35 @@ class ToolCenterDialog(QDialog):
         detail_lines = [
             f"<p><b>文书</b>：{notice.document_name}</p>",
             f"<p><b>类型</b>：{notice.notice_type or '庭审文书'}</p>",
-            f"<p><b>案号</b>：{notice.case_number or '未识别'}</p>",
-            f"<p><b>开庭时间</b>：{notice.display_time}</p>",
-            f"<p><b>开庭地点</b>：{notice.hearing_place or '未识别'}</p>",
-            f"<p><b>案由</b>：{notice.cause or '未识别'}</p>",
-            f"<p><b>签发人</b>：{notice.signer or '未识别'}</p>",
+            f"<p><b>当前状态</b>：<span style='color:{status_color}; font-weight:700;'>{status_text}</span></p>",
         ]
+        if notice.signer:
+            detail_lines.append(f"<p><b>签发人</b>：{notice.signer}</p>")
         if notice.contact_person or notice.contact_phone:
             contact_text = notice.contact_person or "未识别"
             if notice.contact_phone:
                 contact_text = f"{contact_text} / {notice.contact_phone}" if notice.contact_person else notice.contact_phone
             detail_lines.append(f"<p><b>联系人</b>：{contact_text}</p>")
-        if notice.court_name:
-            detail_lines.append(f"<p><b>法院</b>：{notice.court_name}</p>")
-        detail_lines.append(
-            f"<p><b>当前状态</b>：<span style='color:{status_color}; font-weight:700;'>{status_text}</span></p>"
-        )
         self._court_sms_hearing_browser.setHtml("".join(detail_lines))
+
+        # 填充可编辑字段
+        if hasattr(self, "_hearing_edit_frame"):
+            field_values = {
+                "case_number": notice.case_number or "",
+                "summoned_person": notice.summoned_person or "",
+                "hearing_date": notice.hearing_date or "",
+                "hearing_time": notice.hearing_time or "",
+                "hearing_place": notice.hearing_place or "",
+                "cause": notice.cause or "",
+                "court_name": notice.court_name or "",
+            }
+            for key, (lbl, edt) in self._hearing_edit_fields.items():
+                val = field_values.get(key, "")
+                lbl.setText(val or "未识别")
+                lbl.setVisible(True)
+                edt.setText(val)
+                edt.setVisible(False)
+            self._hearing_edit_frame.show()
 
         can_add = (
             status_text not in {"已在期限中", "已加入"}
@@ -2167,6 +2532,9 @@ class ToolCenterDialog(QDialog):
         if not notice:
             QMessageBox.information(self, "暂无可加入事项", "当前没有识别到可加入期限的庭审文书。")
             return
+
+        # 将用户编辑过的字段值写回 notice
+        self._sync_hearing_edit_fields_to_notice(notice)
 
         case_id = self._get_active_court_sms_case_id()
         if case_id:
@@ -2576,6 +2944,21 @@ class ToolCenterDialog(QDialog):
         body.setColumnStretch(1, 5)
         body.setRowStretch(0, 1)
         layout.addLayout(body)
+
+    def _build_docx_compare_tab(self) -> QWidget:
+        """文档对比标签页。"""
+        case_path: Optional[Path] = None
+        if self._initial_case_id:
+            case = self._case_manager.get_case(self._initial_case_id)
+            if case:
+                case_path = Path(case.get("path", ""))
+                if not case_path.exists():
+                    case_path = None
+        return DocxCompareWidget(self, case_path=case_path)
+
+    def _build_auto_format_tab(self) -> QWidget:
+        """自动排版标签页。"""
+        return DocxAutoFormatWidget(self)
 
     def _build_screenshot_image_list_card(self) -> QWidget:
         card, layout = self._create_card(
