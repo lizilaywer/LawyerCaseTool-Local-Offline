@@ -39,3 +39,7 @@ claude-f523-cwd
 # OS
 .DS_Store
 Thumbs.db
+tmp/
+donate_qrcode.png
+wx_qrcode.png
+

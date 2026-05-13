@@ -1572,28 +1572,35 @@ class CaseManager:
         return True
 
     def _build_markdown_export(self, case: Dict[str, Any]) -> str:
-        """构建 Markdown 导出内容。"""
+        """构建 Markdown 导出内容（统一日历导出风格）。"""
         section_titles = case.get("info_section_titles", DEFAULT_INFO_SECTION_TITLES)
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
         lines = [
-            f"# {case.get('name', '未命名案件')}",
+            f"# 📁 {case.get('name', '未命名案件')}",
             "",
-            f"- 案件类型: {case.get('category', '') or '未填写'}",
-            f"- 业务状态: {case.get('status', '') or '未填写'}",
-            f"- 目录状态: {case.get('folder_status', '') or '未填写'}",
-            f"- 当前路径: {case.get('path', '') or '未关联'}",
+            f"> **案件信息导出** ｜ 生成于 {generated_at}",
             "",
-            "## 标签",
+            "## 📋 基本信息",
+            "",
+            f"- **案件类型**：{case.get('category', '') or '未填写'}",
+            f"- **业务状态**：{case.get('status', '') or '未填写'}",
+            f"- **目录状态**：{case.get('folder_status', '') or '未填写'}",
+            f"- **当前路径**：{case.get('path', '') or '未关联'}",
             "",
         ]
 
         tags = case.get("tags", [])
+        lines.append("## 🏷️ 标签")
+        lines.append("")
         if tags:
-            lines.extend([f"- {tag}" for tag in tags])
+            lines.append(" · ".join(f"`{tag}`" for tag in tags))
         else:
-            lines.append("- 暂无标签")
+            lines.append("> 暂无标签")
+        lines.append("")
 
-        lines.extend(["", "## 案件信息", ""])
-        grouped_fields = {
+        # 案件信息字段
+        grouped_fields: Dict[str, List[Dict[str, Any]]] = {
             "basic": [],
             "parties": [],
             "business": [],
@@ -1606,36 +1613,71 @@ class CaseManager:
             else:
                 grouped_fields["custom"].append(field)
 
-        for section_key in ("basic", "parties", "business", "custom"):
-            fields = grouped_fields.get(section_key, [])
-            if not fields:
-                continue
-            lines.extend([f"### {section_titles.get(section_key, DEFAULT_INFO_SECTION_TITLES[section_key])}", ""])
-            for field in fields:
-                lines.append(f"- {field.get('label', '未命名字段')}: {field.get('value', '') or '未填写'}")
+        has_any_fields = any(grouped_fields.get(k, []) for k in ("basic", "parties", "business", "custom"))
+        if has_any_fields:
+            lines.append("## 📑 案件信息")
             lines.append("")
+            for section_key in ("basic", "parties", "business", "custom"):
+                fields = grouped_fields.get(section_key, [])
+                if not fields:
+                    continue
+                section_title = section_titles.get(section_key, DEFAULT_INFO_SECTION_TITLES[section_key])
+                lines.append(f"### {section_title}")
+                lines.append("")
+                for field in fields:
+                    label = field.get("label", "未命名字段")
+                    value = field.get("value", "") or "未填写"
+                    lines.append(f"- **{label}**：{value}")
+                lines.append("")
 
-        lines.extend(["", "## 期限提醒", ""])
+        # 期限提醒
+        lines.append("## ⏰ 期限提醒")
+        lines.append("")
         deadlines = case.get("deadlines", [])
         if deadlines:
             for deadline in deadlines:
-                lines.append(
-                    f"- {deadline.get('title', '未命名期限')} | "
-                    f"{deadline.get('date', '')} "
-                    f"{deadline.get('time', '') if not deadline.get('all_day', True) else '全天'} | "
-                    f"{deadline.get('status', 'pending')}"
-                )
-        else:
-            lines.append("- 暂无期限")
+                title = deadline.get("title", "未命名期限")
+                date_text = deadline.get("date", "")
+                time_text = "全天" if deadline.get("all_day", True) else (deadline.get("time", "") or "09:00")
+                status = str(deadline.get("status", "pending")).strip()
+                dl_type = str(deadline.get("type", "deadline")).strip()
+                description = str(deadline.get("description", "")).strip()
 
-        lines.extend(["", "## 主笔记", "", case.get("notes", "") or "暂无笔记", ""])
+                status_emoji = "✅" if status == "completed" else "⚠️" if status == "overdue" else "⏳"
+                type_label = {"deadline": "普通期限", "hearing": "开庭/庭前", "custom": "自定义提醒"}.get(dl_type, "普通期限")
+
+                lines.append(f"{status_emoji} **{title}** ｜ `{date_text} {time_text}`")
+                lines.append("")
+                lines.append(f"   类型：{type_label} ｜ 状态：{'已完成' if status == 'completed' else '已逾期' if status == 'overdue' else '待处理'}")
+                if description:
+                    lines.append(f"   > {description}")
+                lines.append("")
+        else:
+            lines.append("> 暂无期限事项")
+            lines.append("")
+
+        # 笔记
+        notes = str(case.get("notes", "") or "").strip()
+        if notes:
+            lines.append("## 📝 主笔记")
+            lines.append("")
+            lines.append(notes)
+            lines.append("")
+
         secondary_notes = str(case.get("notes_secondary", "") or "").strip()
         if secondary_notes:
-            lines.extend(["", "## 副笔记", "", secondary_notes, ""])
+            lines.append("## 📝 副笔记")
+            lines.append("")
+            lines.append(secondary_notes)
+            lines.append("")
+
+        lines.append("---")
+        lines.append(f"*由 案件文件夹管理系统 生成于 {generated_at}*")
+        lines.append("")
         return "\n".join(lines)
 
     def _build_deadline_work_log(self, case: Dict[str, Any]) -> str:
-        """根据期限事项构建固定格式工作日志。"""
+        """根据期限事项构建统一风格的工作日志（Markdown）。"""
         deadlines = list(case.get("deadlines", []))
         pending = [item for item in deadlines if str(item.get("status", "pending")).strip() != "completed"]
         completed = [item for item in deadlines if str(item.get("status", "pending")).strip() == "completed"]
@@ -1648,15 +1690,11 @@ class CaseManager:
         pending.sort(key=sort_key)
         completed.sort(key=sort_key)
 
-        def status_label(item: Dict[str, Any]) -> str:
-            return "已完成" if str(item.get("status", "pending")).strip() == "completed" else "待处理"
+        def status_emoji(status: str) -> str:
+            return "✅" if status == "completed" else "⏳"
 
         def type_label(item: Dict[str, Any]) -> str:
-            mapping = {
-                "deadline": "普通期限",
-                "hearing": "开庭/庭前",
-                "custom": "自定义提醒",
-            }
+            mapping = {"deadline": "普通期限", "hearing": "开庭/庭前", "custom": "自定义提醒"}
             return mapping.get(str(item.get("type", "deadline")).strip(), "普通期限")
 
         def format_time(item: Dict[str, Any]) -> str:
@@ -1672,42 +1710,52 @@ class CaseManager:
 
         def append_items(lines: List[str], items: List[Dict[str, Any]]) -> None:
             if not items:
-                lines.extend(["- 暂无记录", ""])
+                lines.extend(["> 暂无记录", ""])
                 return
-            for index, item in enumerate(items, start=1):
-                lines.extend([
-                    f"{index}. 事项：{item.get('title', '未命名事项') or '未命名事项'}",
-                    f"   日期：{str(item.get('date', '')).strip() or '未填写'}",
-                    f"   时间：{format_time(item)}",
-                    f"   类型：{type_label(item)}",
-                    f"   状态：{status_label(item)}",
-                    f"   提醒：{remind_text(item)}",
-                    f"   说明：{str(item.get('description', '')).strip() or '无'}",
-                    "",
-                ])
+            for item in items:
+                title = item.get("title", "未命名事项") or "未命名事项"
+                date_text = str(item.get("date", "")).strip() or "未填写"
+                time_text = format_time(item)
+                dl_type = type_label(item)
+                status = str(item.get("status", "pending")).strip()
+                description = str(item.get("description", "")).strip()
 
+                lines.append(f"{status_emoji(status)} **{title}** ｜ `{date_text} {time_text}`")
+                lines.append("")
+                lines.append(f"   类型：{dl_type} ｜ 状态：{'已完成' if status == 'completed' else '待处理'} ｜ 提醒：{remind_text(item)}")
+                if description:
+                    lines.append(f"   > {description}")
+                lines.append("")
+
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         lines = [
-            f"# {case.get('name', '未命名案件')} 工作日志",
+            f"# 📋 {case.get('name', '未命名案件')} — 工作日志",
             "",
-            f"- 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            f"- 办理状态：{case.get('status', '') or '未填写'}",
-            f"- 案件类型：{case.get('category', '') or '未填写'}",
-            f"- 当前路径：{case.get('path', '') or '未关联'}",
-            f"- 期限总数：{len(deadlines)}",
-            f"- 待处理：{len(pending)}",
-            f"- 已完成：{len(completed)}",
+            f"> **期限事项汇总** ｜ 生成于 {generated_at}",
             "",
-            "## 一、待处理事项",
+            "## 📊 统计概览",
+            "",
+            f"- **期限总数**：{len(deadlines)}",
+            f"- **待处理**：{len(pending)}",
+            f"- **已完成**：{len(completed)}",
+            f"- **办理状态**：{case.get('status', '') or '未填写'}",
+            f"- **案件类型**：{case.get('category', '') or '未填写'}",
+            f"- **当前路径**：{case.get('path', '') or '未关联'}",
+            "",
+            "## ⏳ 待处理事项",
             "",
         ]
         append_items(lines, pending)
-        lines.extend(["## 二、已完成事项", ""])
+        lines.extend(["## ✅ 已完成事项", ""])
         append_items(lines, completed)
         lines.extend([
-            "## 三、工作提示",
+            "## 💡 工作提示",
             "",
-            "- 请结合案件实际进展，将本日志与笔记、案卷文件预览同步更新。",
-            "- 已完成事项建议在案件期限页保持完成状态，以免左侧列表持续高亮提醒。",
+            "> 请结合案件实际进展，将本日志与笔记、案卷文件预览同步更新。",
+            "> 已完成事项建议在案件期限页保持完成状态，以免左侧列表持续高亮提醒。",
+            "",
+            "---",
+            f"*由 案件文件夹管理系统 生成于 {generated_at}*",
             "",
         ])
         return "\n".join(lines)

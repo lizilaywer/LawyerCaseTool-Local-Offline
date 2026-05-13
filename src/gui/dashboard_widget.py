@@ -46,12 +46,35 @@ def _deadline_is_completed(deadline: Dict[str, Any]) -> bool:
     return str(deadline.get("status", "pending")).strip() == "completed"
 
 
+def _deadline_is_overdue(deadline: Dict[str, Any]) -> bool:
+    """判断期限是否已过期。已完成事项不再视为过期。
+
+    与 calendar_dialog.py 的 _deadline_is_overdue 保持一致：
+    - 全天事项：目标日期 < 今天日期
+    - 非全天事项：目标日期时间 < 当前日期时间
+    """
+    if _deadline_is_completed(deadline):
+        return False
+    date_text = str(deadline.get("date", "")).strip()
+    if not date_text:
+        return False
+    time_text = str(deadline.get("time", "")).strip()
+    try:
+        if deadline.get("all_day", not time_text):
+            target = datetime.strptime(date_text, "%Y-%m-%d").date()
+            return target < datetime.now().date()
+        target = datetime.strptime(f"{date_text} {time_text[:5]}", "%Y-%m-%d %H:%M")
+        return target < datetime.now()
+    except ValueError:
+        return False
+
+
 class DashboardWidget(QWidget):
     """工作台主页 Widget"""
 
     # 导航请求信号
     navigate_to_cases_requested = Signal()
-    navigate_to_calendar_requested = Signal()
+    navigate_to_calendar_requested = Signal(str)
     navigate_to_documents_requested = Signal()
     navigate_to_tools_requested = Signal()
     navigate_to_archive_requested = Signal()
@@ -288,8 +311,12 @@ class DashboardWidget(QWidget):
         def _on_card_click(event, k=key):
             if k in ("total", "active", "abnormal"):
                 self.navigate_to_cases_requested.emit()
+            elif k == "overdue":
+                self.navigate_to_calendar_requested.emit("overdue")
+            elif k == "today":
+                self.navigate_to_calendar_requested.emit("today")
             else:
-                self.navigate_to_calendar_requested.emit()
+                self.navigate_to_calendar_requested.emit("future")
         card.mousePressEvent = _on_card_click
 
         self._kpi_cards[key] = card
@@ -367,26 +394,30 @@ class DashboardWidget(QWidget):
             active = sum(1 for c in cases if c.get("status") == "active")
             abnormal = sum(1 for c in cases if c.get("folder_status") != "available")
 
-            # 统计期限
+            # 统计期限（包含案件期限 + 全局独立期限，与日历界面一致）
             overdue = 0
             upcoming = 0
             today_count = 0
             today = datetime.now().date()
 
+            all_deadlines: List[Dict[str, Any]] = []
             for case in cases:
-                for dl in case.get("deadlines", []):
-                    if _deadline_is_completed(dl):
-                        continue
+                all_deadlines.extend(case.get("deadlines", []))
+            all_deadlines.extend(self._cm.get_global_deadlines())
+
+            for dl in all_deadlines:
+                if _deadline_is_completed(dl):
+                    continue
+                if _deadline_is_overdue(dl):
+                    overdue += 1
+                else:
                     dl_date = _deadline_target_date(dl)
-                    if dl_date is None:
-                        continue
-                    days = (dl_date - today).days
-                    if days < 0:
-                        overdue += 1
-                    elif days <= 7:
-                        upcoming += 1
-                    if days == 0:
-                        today_count += 1
+                    if dl_date is not None:
+                        days = (dl_date - today).days
+                        if days <= 7:
+                            upcoming += 1
+                        if days == 0:
+                            today_count += 1
 
             values = {
                 "total": str(total),
@@ -486,13 +517,10 @@ class DashboardWidget(QWidget):
                 if dl_date is None:
                     return
                 days = (dl_date - today).days
-                if days > 7:
-                    return
-                dl_type = dl.get("type", "deadline")
                 if days < 0:
-                    badge = "已逾期"
-                    badge_class = "overdue"
-                elif days == 0:
+                    return   # 不显示逾期事项
+                dl_type = dl.get("type", "deadline")
+                if days == 0:
                     badge = "今天"
                     badge_class = "today"
                 else:

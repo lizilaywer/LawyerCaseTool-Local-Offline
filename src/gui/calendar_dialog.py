@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtWidgets import (
@@ -19,10 +20,19 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QMessageBox,
     QComboBox,
+    QFileDialog,
+    QLineEdit,
+    QCheckBox,
 )
 from PySide6.QtCore import Qt, QRect, Signal, QPoint
 from PySide6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QFontMetrics
 
+from src.config.config_manager import get_config_manager
+from src.core.calendar_exporter import (
+    CalendarExportService,
+    FORMAT_OPTIONS,
+    THEME_OPTIONS,
+)
 from src.core.case_manager import get_case_manager
 from src.gui.case_aux_dialogs import DeadlineEditorDialog
 from src.gui.styles import APP_COLORS as COLORS, CHECK_ICON_PATH
@@ -1468,6 +1478,331 @@ class _ActionButton(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class _SummaryStatCard(QFrame):
+    """顶部统计卡，支持可选的悬停与点击交互。"""
+
+    clicked = Signal()
+
+    def __init__(self, title: str, hint: str, value_color: str, clickable: bool = False, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._hint = hint
+        self._value_color = value_color
+        self._clickable = clickable
+        self._hover = False
+
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor if clickable else Qt.CursorShape.ArrowCursor
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(2)
+
+        self.title_label = QLabel(title)
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.title_label)
+
+        self.value_label = QLabel("0")
+        self.value_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.value_label)
+
+        self.hint_label = QLabel(hint)
+        self.hint_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.hint_label)
+
+        self._update_style()
+
+    def set_value(self, text: str) -> None:
+        self.value_label.setText(text)
+
+    def set_hint(self, text: str) -> None:
+        self._hint = text
+        self.hint_label.setText(text)
+
+    def _update_style(self) -> None:
+        c = COLORS
+        bg = c['surface_1']
+        border = c['border']
+        title_color = c['text_muted']
+        hint_color = c['text_tertiary']
+
+        if self._clickable and self._hover:
+            bg = "#fff7f7"
+            border = "#fecaca"
+            title_color = "#b91c1c"
+            hint_color = "#b91c1c"
+
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 12px;
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+            }}
+        """)
+        self.title_label.setStyleSheet(
+            f"background: transparent; color: {title_color}; font-size: 10px; font-weight: 600;"
+        )
+        self.value_label.setStyleSheet(
+            f"background: transparent; color: {self._value_color}; font-size: 18px; font-weight: 700;"
+        )
+        self.hint_label.setStyleSheet(
+            f"background: transparent; color: {hint_color}; font-size: 10px;"
+        )
+
+    def enterEvent(self, event):  # type: ignore[override]
+        if self._clickable:
+            self._hover = True
+            self._update_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # type: ignore[override]
+        self._hover = False
+        self._update_style()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):  # type: ignore[override]
+        if self._clickable and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class _CalendarExportDialog(QDialog):
+    """期限事项导出配置弹窗。"""
+
+    def __init__(
+        self,
+        *,
+        settings: Dict[str, Any],
+        current_summary: str,
+        filter_notes: List[str],
+        item_count: int,
+        has_quick_preset: bool,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._action = "cancel"
+        self._has_quick_preset = has_quick_preset
+        self.setWindowTitle("导出期限事项")
+        self.setMinimumWidth(560)
+        self.resize(620, 420)
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {COLORS['surface_0']};
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("导出当前筛选结果")
+        title.setStyleSheet(
+            f"background: transparent; color: {COLORS['text_primary']}; font-size: 18px; font-weight: 700;"
+        )
+        layout.addWidget(title)
+
+        summary = QLabel(f"{current_summary} · 共 {item_count} 项")
+        summary.setWordWrap(True)
+        summary.setStyleSheet(
+            f"background: transparent; color: {COLORS['text_secondary']}; font-size: 13px; line-height: 1.7;"
+        )
+        layout.addWidget(summary)
+
+        notes = QLabel(" / ".join(filter_notes) if filter_notes else "当前未额外限制筛选条件，将导出当前视图下的全部事项。")
+        notes.setWordWrap(True)
+        notes.setStyleSheet(
+            f"background: {COLORS['surface_1']}; color: {COLORS['text_muted']}; border: 1px solid {COLORS['border']}; border-radius: 12px; padding: 10px 12px; font-size: 12px;"
+        )
+        layout.addWidget(notes)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+
+        format_label = QLabel("导出格式")
+        format_label.setStyleSheet("background: transparent; font-weight: 600;")
+        grid.addWidget(format_label, 0, 0)
+        self._format_combo = QComboBox()
+        self._format_combo.setStyleSheet(self._combo_style())
+        for key, label in FORMAT_OPTIONS:
+            self._format_combo.addItem(label, key)
+        format_index = self._format_combo.findData(settings.get("last_format", "pdf"))
+        self._format_combo.setCurrentIndex(format_index if format_index >= 0 else 0)
+        grid.addWidget(self._format_combo, 0, 1)
+
+        theme_label = QLabel("导出主题")
+        theme_label.setStyleSheet("background: transparent; font-weight: 600;")
+        grid.addWidget(theme_label, 1, 0)
+        self._theme_combo = QComboBox()
+        self._theme_combo.setStyleSheet(self._combo_style())
+        for key, label in THEME_OPTIONS:
+            self._theme_combo.addItem(label, key)
+        theme_index = self._theme_combo.findData(settings.get("last_theme", "stream"))
+        self._theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
+        grid.addWidget(self._theme_combo, 1, 1)
+
+        dir_label = QLabel("导出目录")
+        dir_label.setStyleSheet("background: transparent; font-weight: 600;")
+        grid.addWidget(dir_label, 2, 0)
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(8)
+        self._dir_edit = QLineEdit(str(settings.get("last_directory", "") or ""))
+        self._dir_edit.setPlaceholderText("选择导出目录")
+        self._dir_edit.setStyleSheet(self._line_edit_style())
+        dir_row.addWidget(self._dir_edit, 1)
+        browse_btn = QPushButton("浏览")
+        browse_btn.setFixedHeight(32)
+        browse_btn.setStyleSheet(self._button_style())
+        browse_btn.clicked.connect(self._choose_directory)
+        dir_row.addWidget(browse_btn)
+        dir_wrapper = QWidget()
+        dir_wrapper.setLayout(dir_row)
+        grid.addWidget(dir_wrapper, 2, 1)
+        layout.addLayout(grid)
+
+        self._save_preset_check = QCheckBox("将当前目录、格式、主题和筛选条件保存为快速导出预设")
+        self._save_preset_check.setChecked(bool(settings.get("auto_export_on_close", False)))
+        self._save_preset_check.setStyleSheet("background: transparent;")
+        layout.addWidget(self._save_preset_check)
+
+        self._auto_export_check = QCheckBox("关闭软件时自动使用快速导出预设")
+        self._auto_export_check.setChecked(bool(settings.get("auto_export_on_close", False)))
+        self._auto_export_check.setStyleSheet("background: transparent;")
+        layout.addWidget(self._auto_export_check)
+
+        preset_tip = QLabel(
+            "快速导出会使用已保存预设；自动导出也会沿用同一套预设。建议先设置好导出目录、格式和当前筛选后再保存。"
+        )
+        preset_tip.setWordWrap(True)
+        preset_tip.setStyleSheet(
+            f"background: transparent; color: {COLORS['text_tertiary']}; font-size: 12px; line-height: 1.7;"
+        )
+        layout.addWidget(preset_tip)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addStretch()
+
+        self._save_btn = QPushButton("保存设置")
+        self._save_btn.setFixedHeight(34)
+        self._save_btn.setStyleSheet(self._button_style())
+        self._save_btn.clicked.connect(self._on_save)
+        buttons.addWidget(self._save_btn)
+
+        self._quick_btn = QPushButton("快速导出")
+        self._quick_btn.setFixedHeight(34)
+        self._quick_btn.setStyleSheet(self._button_style(accent=has_quick_preset))
+        self._quick_btn.setEnabled(has_quick_preset)
+        self._quick_btn.clicked.connect(self._on_quick_export)
+        buttons.addWidget(self._quick_btn)
+
+        self._export_btn = QPushButton("导出当前结果")
+        self._export_btn.setFixedHeight(34)
+        self._export_btn.setStyleSheet(self._button_style(accent=True))
+        self._export_btn.clicked.connect(self._on_export)
+        buttons.addWidget(self._export_btn)
+
+        cancel_btn = QPushButton("关闭")
+        cancel_btn.setFixedHeight(34)
+        cancel_btn.setStyleSheet(self._button_style())
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(cancel_btn)
+        layout.addLayout(buttons)
+
+    def _combo_style(self) -> str:
+        return f"""
+            QComboBox {{
+                background: {COLORS['surface_0']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 10px;
+                min-height: 32px;
+                padding: 0 12px;
+            }}
+        """
+
+    def _line_edit_style(self) -> str:
+        return f"""
+            QLineEdit {{
+                background: {COLORS['surface_0']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 10px;
+                min-height: 32px;
+                padding: 0 12px;
+            }}
+        """
+
+    def _button_style(self, accent: bool = False) -> str:
+        bg = COLORS['accent'] if accent else COLORS['surface_0']
+        fg = COLORS['surface_0'] if accent else COLORS['text_secondary']
+        border = COLORS['accent'] if accent else COLORS['border']
+        hover_bg = COLORS['accent_hover'] if accent else COLORS['surface_2']
+        return f"""
+            QPushButton {{
+                background: {bg};
+                color: {fg};
+                border: 1px solid {border};
+                border-radius: 10px;
+                padding: 0 12px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                background: {hover_bg};
+            }}
+            QPushButton:disabled {{
+                background: {COLORS['surface_1']};
+                color: {COLORS['text_tertiary']};
+                border-color: {COLORS['border']};
+            }}
+        """
+
+    def _choose_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "选择导出目录", self.directory or "")
+        if directory:
+            self._dir_edit.setText(directory)
+
+    @property
+    def action(self) -> str:
+        return self._action
+
+    @property
+    def directory(self) -> str:
+        return str(self._dir_edit.text() or "").strip()
+
+    @property
+    def export_format(self) -> str:
+        return str(self._format_combo.currentData() or "pdf")
+
+    @property
+    def theme(self) -> str:
+        return str(self._theme_combo.currentData() or "stream")
+
+    @property
+    def save_preset(self) -> bool:
+        return self._save_preset_check.isChecked()
+
+    @property
+    def auto_export_on_close(self) -> bool:
+        return self._auto_export_check.isChecked()
+
+    def _on_save(self) -> None:
+        self._action = "save"
+        self.accept()
+
+    def _on_quick_export(self) -> None:
+        self._action = "quick"
+        self.accept()
+
+    def _on_export(self) -> None:
+        self._action = "export"
+        self.accept()
+
+
 class DeadlineDetailRow(QFrame):
     """右侧当天事项卡片，支持编辑、完成/恢复、删除。"""
 
@@ -1844,6 +2179,7 @@ class CalendarDialog(QDialog):
     """
 
     navigate_to_deadline_requested = Signal(str, str)
+    switch_page_requested = Signal(str)
 
     def __init__(self, parent=None, embed_mode: bool = False):
         super().__init__(parent)
@@ -1851,6 +2187,8 @@ class CalendarDialog(QDialog):
         if embed_mode:
             self.setWindowFlags(Qt.Widget)
         self._logger = __import__('src.utils.logger', fromlist=['get_logger']).get_logger()
+        self._config_manager = get_config_manager()
+        self._export_service = CalendarExportService()
         self._cm = get_case_manager()
         today = datetime.now().date()
         self._current_year = today.year
@@ -1869,6 +2207,11 @@ class CalendarDialog(QDialog):
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         self._load_deadlines()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if not self._embed_mode:
+            self.perform_auto_export_on_close(silent=True)
+        super().closeEvent(event)
 
     def _setup_ui(self) -> None:
         """设置界面"""
@@ -1961,6 +2304,7 @@ class CalendarDialog(QDialog):
         # ── 顶部概览统计 ──
         stats_row = QHBoxLayout()
         stats_row.setSpacing(8)
+        self._stats_cards: Dict[str, _SummaryStatCard] = {}
         self._stats_value_labels: Dict[str, QLabel] = {}
         self._stats_hint_labels: Dict[str, QLabel] = {}
         stat_defs = [
@@ -1970,33 +2314,20 @@ class CalendarDialog(QDialog):
             ("hearing", "待开庭", "当前未完成开庭事项"),
         ]
         for key, title, hint in stat_defs:
-            card = QFrame()
-            card.setProperty("summaryStatCard", True)
-            card.setStyleSheet(self._summary_card_style(c))
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 5, 10, 5)
-            card_layout.setSpacing(2)
-
-            title_label = QLabel(title)
-            title_label.setStyleSheet(
-                f"background: transparent; color: {c['text_muted']}; font-size: 10px; font-weight: 600;"
+            value_color = "#dc2626" if key == "hearing" else c['text_primary']
+            card = _SummaryStatCard(
+                title,
+                hint,
+                value_color=value_color,
+                clickable=(key in {"overdue", "hearing"}),
             )
-            card_layout.addWidget(title_label)
-
-            value_label = QLabel("0")
-            value_label.setStyleSheet(
-                f"background: transparent; color: {c['text_primary']}; font-size: 18px; font-weight: 700;"
-            )
-            card_layout.addWidget(value_label)
-            self._stats_value_labels[key] = value_label
-
-            hint_label = QLabel(hint)
-            hint_label.setStyleSheet(
-                f"background: transparent; color: {c['text_tertiary']}; font-size: 10px;"
-            )
-            card_layout.addWidget(hint_label)
-            self._stats_hint_labels[key] = hint_label
-
+            if key == "overdue":
+                card.clicked.connect(self._on_overdue_summary_clicked)
+            if key == "hearing":
+                card.clicked.connect(self._on_hearing_summary_clicked)
+            self._stats_cards[key] = card
+            self._stats_value_labels[key] = card.value_label
+            self._stats_hint_labels[key] = card.hint_label
             stats_row.addWidget(card, 1)
 
         main_layout.addLayout(stats_row)
@@ -2079,36 +2410,57 @@ class CalendarDialog(QDialog):
         self._tag_filter_combo.setMinimumWidth(100)
         self._tag_filter_combo.setStyleSheet(self._filter_combo_style(c))
         self._tag_filter_combo.currentIndexChanged.connect(self._refresh_detail_panel)
-        filter_grid.addWidget(self._tag_filter_combo, 0, 0)
+        self._tag_filter_combo.hide()
 
         self._case_filter_combo = QComboBox()
         self._case_filter_combo.setObjectName("calendarFilterCombo")
-        self._case_filter_combo.setMinimumWidth(100)
+        self._case_filter_combo.setMinimumWidth(132)
         self._case_filter_combo.setStyleSheet(self._filter_combo_style(c))
         self._case_filter_combo.currentIndexChanged.connect(self._refresh_detail_panel)
-        filter_grid.addWidget(self._case_filter_combo, 0, 1)
+        filter_grid.addWidget(self._case_filter_combo, 0, 0)
 
         self._status_filter_combo = QComboBox()
         self._status_filter_combo.setObjectName("calendarFilterCombo")
-        self._status_filter_combo.setMinimumWidth(100)
+        self._status_filter_combo.setMinimumWidth(132)
         self._status_filter_combo.setStyleSheet(self._filter_combo_style(c))
         self._status_filter_combo.addItem("全部状态", "all")
         self._status_filter_combo.addItem("仅未完成", "pending")
         self._status_filter_combo.addItem("仅已逾期", "overdue")
         self._status_filter_combo.addItem("仅已完成", "completed")
         self._status_filter_combo.currentIndexChanged.connect(self._refresh_detail_panel)
-        filter_grid.addWidget(self._status_filter_combo, 1, 0)
+        filter_grid.addWidget(self._status_filter_combo, 0, 1)
 
         self._type_filter_combo = QComboBox()
         self._type_filter_combo.setObjectName("calendarFilterCombo")
-        self._type_filter_combo.setMinimumWidth(100)
+        self._type_filter_combo.setMinimumWidth(132)
+        self._type_filter_combo.setFixedHeight(34)
         self._type_filter_combo.setStyleSheet(self._filter_combo_style(c))
         self._type_filter_combo.addItem("全部类型", "all")
         self._type_filter_combo.addItem("仅开庭", "hearing")
         self._type_filter_combo.addItem("仅期限", "deadline")
         self._type_filter_combo.addItem("仅提醒", "custom")
         self._type_filter_combo.currentIndexChanged.connect(self._refresh_detail_panel)
-        filter_grid.addWidget(self._type_filter_combo, 1, 1)
+        filter_grid.addWidget(self._type_filter_combo, 1, 0)
+
+        action_box = QWidget()
+        action_row = QHBoxLayout(action_box)
+        action_row.setContentsMargins(0, 0, 0, 2)
+        action_row.setSpacing(8)
+
+        self._detail_filter_reset_btn = QPushButton("复位")
+        self._detail_filter_reset_btn.setFixedHeight(34)
+        self._detail_filter_reset_btn.setFixedWidth(56)
+        self._detail_filter_reset_btn.setStyleSheet(self._filter_reset_button_style(c))
+        self._detail_filter_reset_btn.clicked.connect(self._reset_detail_filters)
+        action_row.addWidget(self._detail_filter_reset_btn)
+
+        self._detail_export_btn = QPushButton("快速导出")
+        self._detail_export_btn.setFixedHeight(34)
+        self._detail_export_btn.setFixedWidth(84)
+        self._detail_export_btn.setStyleSheet(self._filter_reset_button_style(c, accent=True))
+        self._detail_export_btn.clicked.connect(self._on_quick_export_click)
+        action_row.addWidget(self._detail_export_btn)
+        filter_grid.addWidget(action_box, 1, 1, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         detail_layout.addLayout(filter_grid)
 
         self._detail_context_label = QLabel("当天事项会按风险高低排序展示。")
@@ -2124,6 +2476,7 @@ class CalendarDialog(QDialog):
         queue_defs = [
             ("default", "全部"),
             ("overdue", "逾期"),
+            ("future", "未来"),
             ("next3", "3天"),
             ("hearing_week", "开庭"),
         ]
@@ -2238,6 +2591,32 @@ class CalendarDialog(QDialog):
                 image: url({DROPDOWN_ARROW_PATH});
                 width: 10px;
                 height: 6px;
+            }}
+        """
+
+    def _filter_reset_button_style(self, c: dict, accent: bool = False) -> str:
+        bg = c['accent'] if accent else c['surface_0']
+        fg = c['surface_0'] if accent else c['text_secondary']
+        border = c['accent'] if accent else c['border']
+        hover_bg = c['accent_hover'] if accent else c['surface_2']
+        return f"""
+            QPushButton {{
+                background-color: {bg};
+                color: {fg};
+                border: 1px solid {border};
+                border-radius: 10px;
+                padding: 0 10px;
+                min-height: 32px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_bg};
+                color: {fg if accent else c['text_primary']};
+                border-color: {border if accent else c['border_strong']};
+            }}
+            QPushButton:pressed {{
+                background-color: {c['accent_hover'] if accent else c['surface_1']};
             }}
         """
 
@@ -2513,7 +2892,16 @@ class CalendarDialog(QDialog):
                 and today_value.strftime("%Y-%m-%d") <= str(item.get("date", "")) <= week_end.strftime("%Y-%m-%d")
             ),
             "overdue": sum(1 for item in pending if _deadline_is_overdue(item)),
-            "hearing": sum(1 for item in pending if str(item.get("type", "deadline")) == "hearing"),
+            "hearing": sum(
+                1
+                for item in pending
+                if (
+                    str(item.get("type", "deadline")) == "hearing"
+                    and not _deadline_is_overdue(item)
+                    and (days := _deadline_days_until(item)) is not None
+                    and days >= 0
+                )
+            ),
         }
 
     def _refresh_summary_cards(self) -> None:
@@ -2530,8 +2918,33 @@ class CalendarDialog(QDialog):
         )
         self._stats_hint_labels["today"].setText("含开庭事项" if hearing_today else "当天需要处理的事项")
         self._stats_hint_labels["week"].setText("未来一周内的安排")
-        self._stats_hint_labels["overdue"].setText("尚未完成且已过期")
-        self._stats_hint_labels["hearing"].setText("开庭事项始终红色高亮")
+        self._stats_hint_labels["overdue"].setText("尚未完成且已过期，点击查看")
+        self._stats_hint_labels["hearing"].setText("未来待开庭，点击查看")
+
+    def _on_overdue_summary_clicked(self) -> None:
+        """点击已逾期统计卡：与右侧逾期筛选保持一致。"""
+        self._apply_risk_filter("overdue")
+
+    def _on_hearing_summary_clicked(self) -> None:
+        """点击待开庭统计卡：切换到全部事项，并筛选未来开庭。"""
+        self._detail_mode = "all"
+        self._risk_filter = "future"
+
+        tag_index = self._tag_filter_combo.findData("")
+        if tag_index >= 0:
+            self._tag_filter_combo.setCurrentIndex(tag_index)
+        case_index = self._case_filter_combo.findData("")
+        if case_index >= 0:
+            self._case_filter_combo.setCurrentIndex(case_index)
+        status_index = self._status_filter_combo.findData("all")
+        if status_index >= 0:
+            self._status_filter_combo.setCurrentIndex(status_index)
+        type_index = self._type_filter_combo.findData("hearing")
+        if type_index >= 0:
+            self._type_filter_combo.setCurrentIndex(type_index)
+
+        self._refresh_mode_buttons()
+        self._refresh_detail_panel()
 
     def _detail_sort_key(self, deadline: Dict[str, Any]) -> tuple:
         completed = _deadline_is_completed(deadline)
@@ -2574,22 +2987,37 @@ class CalendarDialog(QDialog):
     def _selected_case_filter(self) -> str:
         return str(self._case_filter_combo.currentData() or "").strip()
 
-    def _base_deadlines_for_current_view(self) -> List[Dict[str, Any]]:
-        if self._detail_mode == "all":
+    def _current_filter_state(self) -> Dict[str, Any]:
+        selected_date = self._calendar.get_selected_date()
+        return {
+            "detail_mode": self._detail_mode,
+            "selected_date": selected_date.strftime("%Y-%m-%d") if selected_date else "",
+            "tag_filter": self._selected_tag(),
+            "case_filter": self._selected_case_filter(),
+            "case_label": self._case_filter_combo.currentText(),
+            "status_filter": self._selected_status_filter(),
+            "type_filter": self._selected_type_filter(),
+            "type_label": self._type_filter_combo.currentText(),
+            "status_label": self._status_filter_combo.currentText(),
+            "risk_filter": self._risk_filter,
+        }
+
+    def _base_deadlines_for_filter_state(self, filter_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if filter_state.get("detail_mode", "day") == "all":
             return list(self._all_deadlines_cache)
 
-        selected = self._calendar.get_selected_date()
-        if selected is None:
+        selected_text = str(filter_state.get("selected_date", "") or "").strip()
+        if not selected_text:
             return []
-        date_key = selected.strftime("%Y-%m-%d")
-        return [item for item in self._all_deadlines_cache if str(item.get("date", "")) == date_key]
+        return [item for item in self._all_deadlines_cache if str(item.get("date", "")) == selected_text]
 
-    def _filtered_deadlines_for_current_view(self) -> List[Dict[str, Any]]:
-        items = self._base_deadlines_for_current_view()
-        selected_tag = self._selected_tag()
-        selected_case = self._selected_case_filter()
-        status_filter = self._selected_status_filter()
-        type_filter = self._selected_type_filter()
+    def _filtered_deadlines_for_filter_state(self, filter_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        items = self._base_deadlines_for_filter_state(filter_state)
+        selected_tag = str(filter_state.get("tag_filter", "") or "").strip()
+        selected_case = str(filter_state.get("case_filter", "") or "").strip()
+        status_filter = str(filter_state.get("status_filter", "all") or "all").strip()
+        type_filter = str(filter_state.get("type_filter", "all") or "all").strip()
+        risk_filter = str(filter_state.get("risk_filter", "none") or "none").strip()
         filtered: List[Dict[str, Any]] = []
         for item in items:
             if selected_tag and selected_tag not in _normalize_tag_list(item.get("case_tags", [])):
@@ -2609,12 +3037,20 @@ class CalendarDialog(QDialog):
             if status_filter == "overdue" and not _deadline_is_overdue(item):
                 continue
             days_until = _deadline_days_until(item)
-            if self._risk_filter == "overdue" and not _deadline_is_overdue(item):
+            if risk_filter == "overdue" and not _deadline_is_overdue(item):
                 continue
-            if self._risk_filter == "next3":
+            if risk_filter == "future":
+                if (
+                    _deadline_is_completed(item)
+                    or _deadline_is_overdue(item)
+                    or days_until is None
+                    or days_until < 0
+                ):
+                    continue
+            if risk_filter == "next3":
                 if _deadline_is_completed(item) or days_until is None or days_until < 0 or days_until > 3:
                     continue
-            if self._risk_filter == "hearing_week":
+            if risk_filter == "hearing_week":
                 if (
                     _deadline_is_completed(item)
                     or str(item.get("type", "deadline")) != "hearing"
@@ -2627,11 +3063,269 @@ class CalendarDialog(QDialog):
         filtered.sort(key=self._detail_sort_key)
         return filtered
 
+    def _filtered_deadlines_for_current_view(self) -> List[Dict[str, Any]]:
+        return self._filtered_deadlines_for_filter_state(self._current_filter_state())
+
     def _apply_risk_filter(self, filter_key: str) -> None:
         self._risk_filter = "none" if filter_key == "default" else filter_key
         self._detail_mode = "all"
         self._refresh_mode_buttons()
         self._refresh_detail_panel()
+
+    def _reset_detail_filters(self) -> None:
+        defaults = (
+            (self._tag_filter_combo, ""),
+            (self._case_filter_combo, ""),
+            (self._status_filter_combo, "all"),
+            (self._type_filter_combo, "all"),
+        )
+        for combo, default_value in defaults:
+            combo.blockSignals(True)
+            index = combo.findData(default_value)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+        self._risk_filter = "none"
+        self._refresh_mode_buttons()
+        self._refresh_detail_panel()
+
+    def _calendar_export_settings(self) -> Dict[str, Any]:
+        base_dir = str(self._config_manager.get("generation.default_output_dir", "") or "").strip()
+        settings = self._config_manager.get("ui.calendar_export", {}) or {}
+        quick_preset = settings.get("quick_preset", {}) or {}
+        return {
+            "last_directory": str(settings.get("last_directory", base_dir) or base_dir),
+            "last_format": str(settings.get("last_format", "pdf") or "pdf"),
+            "last_theme": str(settings.get("last_theme", "stream") or "stream"),
+            "quick_preset": {
+                "directory": str(quick_preset.get("directory", "") or ""),
+                "format": str(quick_preset.get("format", "pdf") or "pdf"),
+                "theme": str(quick_preset.get("theme", "stream") or "stream"),
+                "filters": dict(quick_preset.get("filters", {}) or {}),
+            },
+            "auto_export_on_close": bool(settings.get("auto_export_on_close", False)),
+            "auto_export_scope": str(settings.get("auto_export_scope", "future") or "future"),
+        }
+
+    def _save_calendar_export_settings(
+        self,
+        *,
+        directory: str,
+        export_format: str,
+        theme: str,
+        save_preset: bool,
+        auto_export_on_close: bool,
+    ) -> Dict[str, Any]:
+        settings = self._calendar_export_settings()
+        settings["last_directory"] = directory
+        settings["last_format"] = export_format
+        settings["last_theme"] = theme
+        settings["auto_export_on_close"] = bool(auto_export_on_close)
+        if save_preset or auto_export_on_close:
+            settings["quick_preset"] = {
+                "directory": directory,
+                "format": export_format,
+                "theme": theme,
+                "filters": self._current_filter_state(),
+            }
+        self._config_manager.set("ui.calendar_export", settings)
+        return settings
+
+    def _filter_notes_for_state(self, filter_state: Dict[str, Any]) -> List[str]:
+        notes: List[str] = []
+        if filter_state.get("detail_mode") == "day" and filter_state.get("selected_date"):
+            notes.append(f"日期：{filter_state['selected_date']}")
+        if filter_state.get("tag_filter"):
+            notes.append(f"标签：{filter_state['tag_filter']}")
+        if filter_state.get("case_filter"):
+            notes.append(f"案件：{filter_state.get('case_label') or filter_state['case_filter']}")
+        if filter_state.get("status_filter", "all") != "all":
+            notes.append(str(filter_state.get("status_label") or filter_state.get("status_filter")))
+        if filter_state.get("type_filter", "all") != "all":
+            notes.append(str(filter_state.get("type_label") or filter_state.get("type_filter")))
+        risk_filter = str(filter_state.get("risk_filter", "none") or "none")
+        if risk_filter == "overdue":
+            notes.append("风险：已逾期")
+        elif risk_filter == "future":
+            notes.append("风险：未来全部")
+        elif risk_filter == "next3":
+            notes.append("风险：未来3天")
+        elif risk_filter == "hearing_week":
+            notes.append("风险：本周开庭")
+        return notes
+
+    def _export_title_for_state(self, filter_state: Dict[str, Any], item_count: int) -> tuple[str, str]:
+        if filter_state.get("detail_mode") == "day" and filter_state.get("selected_date"):
+            title = f"{filter_state['selected_date']} 当天事项导出"
+            summary = f"当天事项 · {item_count} 项"
+        else:
+            title = "期限事项导出"
+            summary = f"全部事项 · {item_count} 项"
+        return title, summary
+
+    def _build_export_output_path(self, directory: str, export_format: str) -> Path:
+        safe_dir = Path(str(directory).strip())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = ".docx" if export_format == "docx" else f".{export_format}"
+        return safe_dir / f"期限任务导出_{timestamp}{suffix}"
+
+    def _export_deadlines_for_state(
+        self,
+        filter_state: Dict[str, Any],
+        *,
+        directory: str,
+        export_format: str,
+        theme: str,
+        silent: bool = False,
+    ) -> Optional[Path]:
+        directory = str(directory or "").strip()
+        if not directory:
+            if not silent:
+                QMessageBox.warning(self, "导出失败", "请先选择导出目录。")
+            return None
+
+        items = self._filtered_deadlines_for_filter_state(filter_state)
+        output_path = self._build_export_output_path(directory, export_format)
+        title, summary = self._export_title_for_state(filter_state, len(items))
+        filter_notes = self._filter_notes_for_state(filter_state)
+        try:
+            self._export_service.export(
+                items,
+                output_path,
+                export_format=export_format,
+                theme=theme,
+                title=title,
+                period_label=self._month_label.text(),
+                summary_label=summary,
+                filter_notes=filter_notes,
+            )
+        except Exception as exc:
+            self._logger.error(f"期限导出失败: {exc}")
+            if not silent:
+                QMessageBox.critical(self, "导出失败", f"导出期限事项失败：{exc}")
+            return None
+
+        self._logger.info(f"期限导出成功: {output_path}")
+        if not silent:
+            QMessageBox.information(self, "导出完成", f"已导出到：\n{output_path}")
+        return output_path
+
+    def _has_quick_export_preset(self, settings: Optional[Dict[str, Any]] = None) -> bool:
+        config = settings or self._calendar_export_settings()
+        preset = config.get("quick_preset", {}) or {}
+        return bool(str(preset.get("directory", "") or "").strip())
+
+    def _run_quick_export(self, *, silent: bool = False) -> Optional[Path]:
+        settings = self._calendar_export_settings()
+        # 优先使用 quick_preset，否则回退到 last_*
+        preset = settings.get("quick_preset", {}) or {}
+        directory = str(preset.get("directory", "") or "").strip()
+        export_format = str(preset.get("format", "") or "")
+        theme = str(preset.get("theme", "") or "")
+        filter_state = dict(preset.get("filters", {}) or {})
+
+        if not directory:
+            directory = str(settings.get("last_directory", "") or "").strip()
+        if not export_format:
+            export_format = str(settings.get("last_format", "pdf") or "pdf")
+        if not theme:
+            theme = str(settings.get("last_theme", "stream") or "stream")
+        if not filter_state:
+            filter_state = self._current_filter_state()
+
+        # 关闭软件自动导出时，按设置中的「导出范围」覆盖 risk_filter
+        if silent:
+            scope = str(settings.get("auto_export_scope", "future") or "future")
+            if scope == "future":
+                filter_state["risk_filter"] = "future"
+                filter_state["detail_mode"] = "all"
+                filter_state["selected_date"] = ""
+            elif scope == "overdue":
+                filter_state["risk_filter"] = "overdue"
+                filter_state["detail_mode"] = "all"
+                filter_state["selected_date"] = ""
+            # scope == "current" 时保持 filter_state 不变
+
+        if not directory:
+            if not silent:
+                QMessageBox.warning(self, "快速导出不可用", "请先前往「设置 → 日历导出」配置导出目录。")
+            return None
+        return self._export_deadlines_for_state(
+            filter_state,
+            directory=directory,
+            export_format=export_format,
+            theme=theme,
+            silent=silent,
+        )
+
+    def _on_quick_export_click(self) -> None:
+        """点击快速导出按钮：直接使用设置中的预设执行导出，不弹对话框。"""
+        settings = self._calendar_export_settings()
+        directory = str(settings.get("last_directory", "") or "").strip()
+        if not directory:
+            QMessageBox.warning(
+                self,
+                "快速导出未配置",
+                "尚未设置日历导出目录。\n\n请前往「设置 → 日历导出」配置导出目录、格式和主题后再试。",
+            )
+            return
+        filter_state = self._current_filter_state()
+        self._export_deadlines_for_state(
+            filter_state,
+            directory=directory,
+            export_format=str(settings.get("last_format", "pdf") or "pdf"),
+            theme=str(settings.get("last_theme", "stream") or "stream"),
+            silent=False,
+        )
+
+    def _open_export_dialog(self) -> None:
+        filter_state = self._current_filter_state()
+        items = self._filtered_deadlines_for_filter_state(filter_state)
+        title, summary = self._export_title_for_state(filter_state, len(items))
+        settings = self._calendar_export_settings()
+        dialog = _CalendarExportDialog(
+            settings=settings,
+            current_summary=summary,
+            filter_notes=self._filter_notes_for_state(filter_state),
+            item_count=len(items),
+            has_quick_preset=self._has_quick_export_preset(settings),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        directory = dialog.directory
+        if dialog.action in {"save", "export"} and not directory:
+            QMessageBox.warning(self, "缺少目录", "请先选择导出目录。")
+            return
+
+        settings = self._save_calendar_export_settings(
+            directory=directory,
+            export_format=dialog.export_format,
+            theme=dialog.theme,
+            save_preset=dialog.save_preset,
+            auto_export_on_close=dialog.auto_export_on_close,
+        )
+
+        if dialog.action == "save":
+            QMessageBox.information(self, "设置已保存", "导出设置已保存。")
+            return
+        if dialog.action == "quick":
+            self._run_quick_export(silent=False)
+            return
+        if dialog.action == "export":
+            self._export_deadlines_for_state(
+                filter_state,
+                directory=directory,
+                export_format=dialog.export_format,
+                theme=dialog.theme,
+                silent=False,
+            )
+
+    def perform_auto_export_on_close(self, *, silent: bool = True) -> Optional[Path]:
+        settings = self._calendar_export_settings()
+        if not settings.get("auto_export_on_close", False):
+            return None
+        return self._run_quick_export(silent=silent)
 
     def _set_detail_mode(self, mode: str) -> None:
         if mode not in {"day", "all"}:
@@ -2671,6 +3365,8 @@ class CalendarDialog(QDialog):
                 filter_notes.append(self._type_filter_combo.currentText())
             if self._risk_filter == "overdue":
                 filter_notes.append("风险：已逾期")
+            elif self._risk_filter == "future":
+                filter_notes.append("风险：未来全部")
             elif self._risk_filter == "next3":
                 filter_notes.append("风险：未来3天")
             elif self._risk_filter == "hearing_week":
@@ -2926,6 +3622,13 @@ class CalendarDialog(QDialog):
 
     def _on_tool_center(self) -> None:
         """打开工具中心。"""
+        owner = self._find_case_manager_owner()
+        if self._embed_mode and owner is not None:
+            owner._on_tool_center()
+            return
+        if self._embed_mode:
+            self.switch_page_requested.emit("tools")
+            return
         from src.gui.tool_center_dialog import ToolCenterDialog
         dialog = ToolCenterDialog(self)
         dialog.exec()
@@ -2945,11 +3648,18 @@ class CalendarDialog(QDialog):
     def _on_case_manager(self) -> None:
         """打开案件管理，若当前已在案件管理上下文中则直接返回。"""
         owner = self._find_case_manager_owner()
+        if self._embed_mode and owner is not None:
+            if hasattr(owner, "_main_stack"):
+                owner._main_stack.setCurrentIndex(0)
+            return
         if owner is not None:
             self.accept()
             owner.show()
             owner.raise_()
             owner.activateWindow()
+            return
+        if self._embed_mode:
+            self.switch_page_requested.emit("cases")
             return
 
         from src.gui.case_manager_dialog import CaseManagerDialog

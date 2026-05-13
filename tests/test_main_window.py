@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """主窗口启动流测试"""
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QWidget
 
 from src.gui.main_window import MainWindow
@@ -71,3 +72,27 @@ def test_default_case_manager_home_shows_generation_page_when_new_case_selected(
     assert captured.get("executed") is True
     assert captured.get("quit_called") is not True
     assert window.isVisible()
+
+
+def test_main_window_close_triggers_calendar_auto_export(qapp, monkeypatch):
+    _patch_main_window_bootstrap(monkeypatch)
+
+    captured = {}
+
+    class DummyCalendarPage:
+        def perform_auto_export_on_close(self, silent=True):
+            captured["silent"] = silent
+
+    def _minimal_setup_ui(self):
+        self.setCentralWidget(QWidget())
+        self._calendar_page = DummyCalendarPage()
+
+    monkeypatch.setattr(MainWindow, "_setup_ui", _minimal_setup_ui)
+
+    window = MainWindow()
+    window._config_manager.set = lambda *args, **kwargs: None
+
+    event = QCloseEvent()
+    window.closeEvent(event)
+
+    assert captured == {"silent": True}

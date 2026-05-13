@@ -7,10 +7,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QDate, QEvent, QObject, QStringListModel, Qt, QUrl, Signal, QThread
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QDate, QEvent, QObject, QStringListModel, Qt, QUrl, Signal, QThread, QMarginsF
+from PySide6.QtGui import QDesktopServices, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
+    QCalendarWidget,
     QCheckBox,
     QComboBox,
     QCompleter,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTextEdit,
     QTextBrowser,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -77,6 +79,7 @@ from src.core.legal_toolkit import (
     compensation_years_for_age,
     money,
 )
+from src.core.lpr_data import calculate_lpr_interest, calculate_interest_days, get_lpr_manager
 from src.gui.styles import APP_COLORS as COLORS, CHECK_ICON_PATH
 from src.gui.widgets.docx_compare_widget import DocxCompareWidget
 from src.gui.widgets.docx_auto_format_widget import DocxAutoFormatWidget
@@ -403,6 +406,7 @@ class ToolCenterDialog(QDialog):
     def _make_button(self, text: str, accent: bool = False) -> QPushButton:
         btn = QPushButton(text)
         btn.setFixedHeight(30)
+        btn.setFlat(True)
         if accent:
             btn.setStyleSheet(f"""
                 QPushButton {{
@@ -493,6 +497,40 @@ class ToolCenterDialog(QDialog):
         widget.setCalendarPopup(True)
         widget.setDate(QDate.currentDate())
         widget.setMinimumHeight(34)
+        # 独立创建日历控件并设置浅色样式，避免 QDateEdit 本体被样式表干扰
+        calendar = QCalendarWidget()
+        calendar.setStyleSheet("""
+            QCalendarWidget { background-color: #ffffff; }
+            QCalendarWidget QTableView {
+                background-color: #ffffff; color: #1f2937;
+                selection-background-color: #dbeafe; selection-color: #2563eb;
+                border: none; outline: none;
+            }
+            QCalendarWidget QTableView::item { padding: 4px; border-radius: 4px; }
+            QCalendarWidget QTableView::item:selected {
+                background-color: #dbeafe; color: #2563eb; font-weight: 700;
+            }
+            QCalendarWidget QTableView::item:hover { background-color: #eff6ff; }
+            QCalendarWidget QHeaderView::section {
+                background-color: #f9fafb; color: #6b7280; border: none;
+                padding: 6px 4px; font-size: 12px; font-weight: 600;
+            }
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background-color: #f9fafb; border-bottom: 1px solid #e5e7eb; padding: 4px;
+            }
+            QCalendarWidget QSpinBox, QCalendarWidget QComboBox {
+                background-color: #ffffff; color: #1f2937;
+                border: 1px solid #d1d5db; border-radius: 4px;
+                padding: 2px 6px; font-size: 13px; font-weight: 600;
+            }
+            QCalendarWidget QToolButton {
+                background-color: transparent; color: #374151;
+                border: none; border-radius: 4px; padding: 2px;
+                font-size: 13px; font-weight: 700;
+            }
+            QCalendarWidget QToolButton:hover { background-color: #e5e7eb; }
+        """)
+        widget.setCalendarWidget(calendar)
         return widget
 
     def _make_line_edit(self, placeholder: str = "") -> QLineEdit:
@@ -1063,27 +1101,267 @@ class ToolCenterDialog(QDialog):
     def _build_interest_card(self) -> QWidget:
         card, layout = self._create_card(
             "利息计算",
-            "按简单利息模型计算。默认按 365 天折算，可按需要手工调整年利率与计息天数。",
+            "支持 LPR 分段计息与固定利率计息，自动匹配全国银行间同业拆借中心公布的贷款市场报价利率。",
         )
-        form = self._create_form()
-        self._interest_principal = self._make_money_spin()
-        self._interest_rate = self._make_rate_spin(maximum=1000, decimals=4)
-        self._interest_days = self._make_int_spin(36500)
-        self._interest_day_basis = QComboBox()
-        self._interest_day_basis.addItem("按 365 天", 365)
-        self._interest_day_basis.addItem("按 360 天", 360)
-        form.addRow("本金", self._interest_principal)
-        form.addRow("年利率（%）", self._interest_rate)
-        form.addRow("计息天数", self._interest_days)
-        form.addRow("折算口径", self._interest_day_basis)
-        layout.addLayout(form)
+        # 增加卡片底部边距，避免圆角区域截断按钮下沿边框
+        layout.setContentsMargins(16, 14, 16, 22)
+        # 左右分栏：左侧输入，右侧结果
+        content_split = QHBoxLayout()
+        content_split.setSpacing(16)
 
-        btn = self._make_button("计算利息", accent=True)
-        btn.clicked.connect(self._calculate_interest)
-        layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignRight)
+        # ─── 左侧：输入区域 ───
+        left_panel = QWidget()
+        left_panel.setStyleSheet("background: transparent;")
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(6)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        form = self._create_form()
+        self._interest_principal = self._make_money_spin(blank_zero=True)
+        self._interest_principal.lineEdit().setPlaceholderText("请输入金额")
+        form.addRow("计算基数", self._interest_principal)
+
+        self._interest_rate_type_combo = QComboBox()
+        self._interest_rate_type_combo.addItem("全国银行间同业拆借中心公布的贷款市场报价利率(LPR)", "lpr")
+        form.addRow("利率类型", self._interest_rate_type_combo)
+
+        # 日期行
+        date_widget = QWidget()
+        date_grid = QGridLayout(date_widget)
+        date_grid.setHorizontalSpacing(6)
+        date_grid.setVerticalSpacing(4)
+        date_grid.setContentsMargins(0, 0, 0, 0)
+        self._interest_start_date = self._make_date_edit()
+        self._interest_end_date = self._make_date_edit()
+        date_grid.addWidget(QLabel("起始日期"), 0, 0)
+        date_grid.addWidget(self._interest_start_date, 0, 1)
+        date_grid.addWidget(QLabel("截止日期"), 1, 0)
+        date_grid.addWidget(self._interest_end_date, 1, 1)
+        form.addRow("", date_widget)
+
+        # 起止日期选项（2×2）
+        opt_widget = QWidget()
+        opt_grid = QGridLayout(opt_widget)
+        opt_grid.setHorizontalSpacing(8)
+        opt_grid.setVerticalSpacing(4)
+        opt_grid.setContentsMargins(0, 0, 0, 0)
+        self._interest_date_opt_both = QCheckBox("起止日期均计算在内")
+        self._interest_date_opt_start_only = QCheckBox("起始日期计算在内，截止日期不计算在内")
+        self._interest_date_opt_end_only = QCheckBox("起始日期不计算在内，截止日期计算在内")
+        self._interest_date_opt_neither = QCheckBox("起止日期均不计算在内")
+        self._interest_date_opt_both.setChecked(True)
+        opt_grid.addWidget(self._interest_date_opt_both, 0, 0)
+        opt_grid.addWidget(self._interest_date_opt_start_only, 0, 1)
+        opt_grid.addWidget(self._interest_date_opt_neither, 1, 0)
+        opt_grid.addWidget(self._interest_date_opt_end_only, 1, 1)
+        form.addRow("起止日期选项", opt_widget)
+
+        # 一年为
+        basis_widget = QWidget()
+        basis_row = QHBoxLayout(basis_widget)
+        basis_row.setSpacing(6)
+        basis_row.setContentsMargins(0, 0, 0, 0)
+        self._interest_year_basis_360 = QCheckBox("360天")
+        self._interest_year_basis_365 = QCheckBox("365天")
+        self._interest_year_basis_365.setChecked(True)
+        basis_row.addWidget(self._interest_year_basis_360)
+        basis_row.addWidget(self._interest_year_basis_365)
+        basis_row.addStretch()
+        form.addRow("一年为", basis_widget)
+
+        left_layout.addLayout(form)
+
+        # LPR 选项
+        lpr_group = QWidget()
+        lpr_layout = QVBoxLayout(lpr_group)
+        lpr_layout.setSpacing(4)
+        lpr_layout.setContentsMargins(0, 0, 0, 0)
+
+        lpr_label = QLabel("LPR选项")
+        lpr_label.setStyleSheet(f"color: {COLORS['text_primary']}; font-weight: 600;")
+        lpr_layout.addWidget(lpr_label)
+
+        # LPR计算方式
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(6)
+        self._interest_lpr_mode_seg = QCheckBox("分段LPR")
+        self._interest_lpr_mode_fixed = QCheckBox("指定LPR")
+        self._interest_lpr_mode_seg.setChecked(True)
+        mode_row.addWidget(QLabel("计算方式:"))
+        mode_row.addWidget(self._interest_lpr_mode_seg)
+        mode_row.addWidget(self._interest_lpr_mode_fixed)
+        mode_row.addStretch()
+        lpr_layout.addLayout(mode_row)
+
+        # LPR档次 + 指定利率
+        term_row = QHBoxLayout()
+        term_row.setSpacing(6)
+        self._interest_lpr_term_1y = QCheckBox("1年期LPR")
+        self._interest_lpr_term_5y = QCheckBox("5年期以上LPR")
+        self._interest_lpr_term_1y.setChecked(True)
+        term_row.addWidget(QLabel("LPR档次:"))
+        term_row.addWidget(self._interest_lpr_term_1y)
+        term_row.addWidget(self._interest_lpr_term_5y)
+        term_row.addSpacing(12)
+        self._interest_lpr_fixed_rate = self._make_rate_spin(maximum=100, decimals=4)
+        self._interest_lpr_fixed_rate.setVisible(False)
+        term_row.addWidget(QLabel("指定利率(%):"))
+        term_row.addWidget(self._interest_lpr_fixed_rate)
+        term_row.addStretch()
+        lpr_layout.addLayout(term_row)
+
+        # 调整方式
+        adjust_row = QHBoxLayout()
+        adjust_row.setSpacing(6)
+        self._interest_lpr_adjust_combo = QComboBox()
+        self._interest_lpr_adjust_combo.addItem("倍数", "multiple")
+        self._interest_lpr_adjust_combo.addItem("加计", "add")
+        self._interest_lpr_adjust_combo.addItem("浮动", "float")
+        self._interest_lpr_adjust_value = self._make_rate_spin(maximum=1000, decimals=4)
+        adjust_row.addWidget(QLabel("调整:"))
+        adjust_row.addWidget(self._interest_lpr_adjust_combo)
+        adjust_row.addWidget(self._interest_lpr_adjust_value)
+        adjust_row.addStretch()
+        lpr_layout.addLayout(adjust_row)
+
+        left_layout.addWidget(lpr_group)
+
+        left_layout.addWidget(self._make_micro_hint("例如：加计50%，相当于上浮50%，相当于1.5倍"))
+        left_layout.addStretch()
+
+        # 按钮行
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        calc_btn = QToolButton()
+        calc_btn.setText("计算利息")
+        calc_btn.setFixedHeight(28)
+        calc_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        calc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        calc_btn.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect)
+        calc_btn.setStyleSheet(f"""
+            QToolButton {{
+                background: {COLORS['accent_subtle']};
+                color: {COLORS['accent']};
+                border: 1px solid {COLORS['accent_light']};
+                border-radius: 8px;
+                padding: 0 14px;
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QToolButton:hover {{
+                background: rgba(219, 234, 254, 0.92);
+            }}
+        """)
+        calc_btn.clicked.connect(self._calculate_interest)
+        btn_row.addWidget(calc_btn)
+        left_layout.addLayout(btn_row)
+        left_layout.addSpacing(3)
+
+        content_split.addWidget(left_panel, 1)
+
+        # ─── 右侧：结果区域 ───
+        right_panel = QWidget()
+        right_panel.setStyleSheet("background: transparent;")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
         self._interest_result = self._make_result_browser()
-        layout.addWidget(self._interest_result)
+        self._interest_result.setMinimumWidth(320)
+        right_layout.addWidget(self._interest_result, 1)
+
+        # 导出按钮
+        export_row = QHBoxLayout()
+        export_row.addStretch()
+        self._interest_export_btn = QToolButton()
+        self._interest_export_btn.setText("导出结果")
+        self._interest_export_btn.setFixedHeight(28)
+        self._interest_export_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._interest_export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._interest_export_btn.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect)
+        self._interest_export_btn.setStyleSheet(f"""
+            QToolButton {{
+                background: {COLORS['surface_1']};
+                color: {COLORS['text_secondary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+                padding: 0 14px;
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QToolButton:hover {{
+                background: {COLORS['surface_2']};
+                color: {COLORS['text_primary']};
+            }}
+        """)
+        self._interest_export_btn.setEnabled(False)
+        self._interest_export_btn.clicked.connect(self._export_interest_result)
+        export_row.addWidget(self._interest_export_btn)
+        right_layout.addLayout(export_row)
+        right_layout.addSpacing(3)
+
+        content_split.addWidget(right_panel, 1)
+        layout.addLayout(content_split)
+
+        # 互斥处理
+        def _on_date_opt_changed(changed_cb):
+            for cb in (self._interest_date_opt_both, self._interest_date_opt_start_only,
+                       self._interest_date_opt_end_only, self._interest_date_opt_neither):
+                if cb != changed_cb:
+                    cb.blockSignals(True)
+                    cb.setChecked(False)
+                    cb.blockSignals(False)
+            if not changed_cb.isChecked():
+                changed_cb.blockSignals(True)
+                changed_cb.setChecked(True)
+                changed_cb.blockSignals(False)
+
+        self._interest_date_opt_both.stateChanged.connect(lambda: _on_date_opt_changed(self._interest_date_opt_both))
+        self._interest_date_opt_start_only.stateChanged.connect(lambda: _on_date_opt_changed(self._interest_date_opt_start_only))
+        self._interest_date_opt_end_only.stateChanged.connect(lambda: _on_date_opt_changed(self._interest_date_opt_end_only))
+        self._interest_date_opt_neither.stateChanged.connect(lambda: _on_date_opt_changed(self._interest_date_opt_neither))
+
+        def _on_basis_changed(changed_cb):
+            other = self._interest_year_basis_365 if changed_cb == self._interest_year_basis_360 else self._interest_year_basis_360
+            other.blockSignals(True)
+            other.setChecked(False)
+            other.blockSignals(False)
+            if not changed_cb.isChecked():
+                changed_cb.blockSignals(True)
+                changed_cb.setChecked(True)
+                changed_cb.blockSignals(False)
+
+        self._interest_year_basis_360.stateChanged.connect(lambda: _on_basis_changed(self._interest_year_basis_360))
+        self._interest_year_basis_365.stateChanged.connect(lambda: _on_basis_changed(self._interest_year_basis_365))
+
+        def _on_lpr_mode_changed(changed_cb):
+            other = self._interest_lpr_mode_fixed if changed_cb == self._interest_lpr_mode_seg else self._interest_lpr_mode_seg
+            other.blockSignals(True)
+            other.setChecked(False)
+            other.blockSignals(False)
+            if not changed_cb.isChecked():
+                changed_cb.blockSignals(True)
+                changed_cb.setChecked(True)
+                changed_cb.blockSignals(False)
+            self._interest_lpr_fixed_rate.setVisible(self._interest_lpr_mode_fixed.isChecked())
+
+        self._interest_lpr_mode_seg.stateChanged.connect(lambda: _on_lpr_mode_changed(self._interest_lpr_mode_seg))
+        self._interest_lpr_mode_fixed.stateChanged.connect(lambda: _on_lpr_mode_changed(self._interest_lpr_mode_fixed))
+
+        def _on_lpr_term_changed(changed_cb):
+            other = self._interest_lpr_term_5y if changed_cb == self._interest_lpr_term_1y else self._interest_lpr_term_1y
+            other.blockSignals(True)
+            other.setChecked(False)
+            other.blockSignals(False)
+            if not changed_cb.isChecked():
+                changed_cb.blockSignals(True)
+                changed_cb.setChecked(True)
+                changed_cb.blockSignals(False)
+
+        self._interest_lpr_term_1y.stateChanged.connect(lambda: _on_lpr_term_changed(self._interest_lpr_term_1y))
+        self._interest_lpr_term_5y.stateChanged.connect(lambda: _on_lpr_term_changed(self._interest_lpr_term_5y))
+
+        self._last_interest_result: Optional[Dict[str, Any]] = None
         return card
 
     def _build_liquidated_card(self) -> QWidget:
@@ -2757,13 +3035,186 @@ class ToolCenterDialog(QDialog):
         )
 
     def _calculate_interest(self) -> None:
-        result = calculate_simple_interest(
-            self._interest_principal.value(),
-            self._interest_rate.value(),
-            self._interest_days.value(),
-            day_basis=int(self._interest_day_basis.currentData()),
+        principal = self._interest_principal.value()
+        start = self._interest_start_date.date().toString("yyyy-MM-dd")
+        end = self._interest_end_date.date().toString("yyyy-MM-dd")
+
+        include_start = self._interest_date_opt_both.isChecked() or self._interest_date_opt_start_only.isChecked()
+        include_end = self._interest_date_opt_both.isChecked() or self._interest_date_opt_end_only.isChecked()
+
+        day_basis = 360 if self._interest_year_basis_360.isChecked() else 365
+
+        term = "1y" if self._interest_lpr_term_1y.isChecked() else "5y"
+        lpr_mode = "segment" if self._interest_lpr_mode_seg.isChecked() else "fixed"
+        fixed_rate = self._interest_lpr_fixed_rate.value()
+        adjust_mode = str(self._interest_lpr_adjust_combo.currentData() or "multiple")
+        adjust_value = self._interest_lpr_adjust_value.value()
+
+        try:
+            result = calculate_lpr_interest(
+                principal=principal,
+                start_date=start,
+                end_date=end,
+                term=term,
+                day_basis=day_basis,
+                include_start=include_start,
+                include_end=include_end,
+                lpr_mode=lpr_mode,
+                fixed_rate=fixed_rate,
+                adjust_mode=adjust_mode,
+                adjust_value=adjust_value,
+            )
+        except Exception as e:
+            self._interest_result.setHtml(f"<p style='color:red;'>计算出错：{e}</p>")
+            self._interest_export_btn.setEnabled(False)
+            self._last_interest_result = None
+            return
+
+        self._last_interest_result = result
+        self._last_interest_result["principal"] = principal
+
+        total = result["total_interest"]
+        days = result["total_days"]
+        segments = result.get("segments", [])
+
+        html = f"""
+        <h3 style="margin:0 0 10px 0;color:{COLORS['text_primary']};">利息计算结果</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;">
+          <tr style="background:{COLORS['surface_1']};">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid {COLORS['border']};">项目</th>
+            <th style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS['border']};">数值</th>
+          </tr>
+          <tr>
+            <td style="padding:6px 8px;border-bottom:1px solid {COLORS['border']};">计算基数</td>
+            <td style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS['border']};">¥ {principal:,.2f}</td>
+          </tr>
+          <tr style="background:#f9fafb;">
+            <td style="padding:6px 8px;border-bottom:1px solid {COLORS['border']};"><b>总利息</b></td>
+            <td style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS['border']};color:{COLORS['accent']};"><b>¥ {total:,.2f}</b></td>
+          </tr>
+          <tr>
+            <td style="padding:6px 8px;border-bottom:1px solid {COLORS['border']};">计息天数</td>
+            <td style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS['border']};">{days} 天</td>
+          </tr>
+        </table>
+        """
+
+        if segments:
+            html += f'<h4 style="margin:10px 0 6px 0;color:{COLORS["text_primary"]};">分段明细</h4>'
+            html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            html += f'<tr style="background:{COLORS["surface_1"]};"><th style="padding:6px 8px;text-align:left;border-bottom:1px solid {COLORS["border"]};">起止日期</th><th style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS["border"]};">天数</th><th style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS["border"]};">利率</th><th style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS["border"]};">利息</th></tr>'
+            for i, seg in enumerate(segments):
+                bg = "background:#f9fafb;" if i % 2 == 1 else ""
+                html += f'<tr style="{bg}"><td style="padding:6px 8px;border-bottom:1px solid {COLORS["border"]};">{seg["start"]} ~ {seg["end"]}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS["border"]};">{seg["days"]}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS["border"]};">{seg["rate"]:.4f}%</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid {COLORS["border"]};">¥ {seg["interest"]:,.2f}</td></tr>'
+            html += '</table>'
+
+        self._interest_result.setHtml(html)
+        self._interest_export_btn.setEnabled(True)
+
+    def _export_interest_result(self) -> None:
+        if not self._last_interest_result:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出利息计算结果", "利息计算结果.html",
+            "HTML 文件 (*.html);;Word 文档 (*.docx);;PDF 文档 (*.pdf)"
         )
-        self._interest_result.setHtml(self._format_money_html("利息结果", result))
+        if not path:
+            return
+        if path.lower().endswith(".docx"):
+            try:
+                from docx import Document
+                from docx.shared import Pt, RGBColor, Inches
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+                doc = Document()
+
+                # 添加标题
+                title = doc.add_paragraph()
+                run = title.add_run("利息计算结果")
+                run.bold = True
+                run.font.size = Pt(18)
+                run.font.color.rgb = RGBColor(0x1F, 0x29, 0x37)
+                title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+                principal = self._last_interest_result.get("principal", 0)
+                total = self._last_interest_result["total_interest"]
+                days = self._last_interest_result["total_days"]
+                segments = self._last_interest_result.get("segments", [])
+
+                # 汇总表
+                summary = doc.add_table(rows=1, cols=2)
+                summary.style = "Table Grid"
+                hdr = summary.rows[0].cells
+                hdr[0].text = "项目"
+                hdr[1].text = "数值"
+                for cell in hdr:
+                    for paragraph in cell.paragraphs:
+                        for r in paragraph.runs:
+                            r.bold = True
+
+                for label, value in [
+                    ("计算基数", f"¥ {principal:,.2f}"),
+                    ("总利息", f"¥ {total:,.2f}"),
+                    ("计息天数", f"{days} 天"),
+                ]:
+                    row = summary.add_row().cells
+                    row[0].text = label
+                    row[1].text = value
+                    if label == "总利息":
+                        for paragraph in row[1].paragraphs:
+                            for r in paragraph.runs:
+                                r.bold = True
+
+                if segments:
+                    doc.add_paragraph()
+                    p = doc.add_paragraph()
+                    p.add_run("分段明细").bold = True
+
+                    table = doc.add_table(rows=1, cols=4)
+                    table.style = "Table Grid"
+                    hdr_cells = table.rows[0].cells
+                    hdr_cells[0].text = "起止日期"
+                    hdr_cells[1].text = "天数"
+                    hdr_cells[2].text = "利率"
+                    hdr_cells[3].text = "利息"
+                    for cell in hdr_cells:
+                        for paragraph in cell.paragraphs:
+                            for r in paragraph.runs:
+                                r.bold = True
+                    for seg in segments:
+                        row_cells = table.add_row().cells
+                        row_cells[0].text = f"{seg['start']} ~ {seg['end']}"
+                        row_cells[1].text = str(seg["days"])
+                        row_cells[2].text = f"{seg['rate']:.4f}%"
+                        row_cells[3].text = f"¥ {seg['interest']:,.2f}"
+
+                doc.save(path)
+                QMessageBox.information(self, "导出成功", f"已保存到：{path}")
+            except Exception as e:
+                QMessageBox.warning(self, "导出失败", f"Word 导出出错：{e}")
+        elif path.lower().endswith(".pdf"):
+            try:
+                from PySide6.QtPrintSupport import QPrinter
+                from PySide6.QtGui import QTextDocument
+
+                printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+                printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+                printer.setOutputFileName(path)
+                printer.setPageMargins(QMarginsF(15, 15, 15, 15), QPrinter.Unit.Millimeter)
+
+                doc = QTextDocument()
+                doc.setHtml(self._interest_result.toHtml())
+                doc.print(printer)
+                QMessageBox.information(self, "导出成功", f"已保存到：{path}")
+            except Exception as e:
+                QMessageBox.warning(self, "导出失败", f"PDF 导出出错：{e}")
+        else:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self._interest_result.toHtml())
+                QMessageBox.information(self, "导出成功", f"已保存到：{path}")
+            except Exception as e:
+                QMessageBox.warning(self, "导出失败", f"HTML 导出出错：{e}")
 
     def _calculate_liquidated(self) -> None:
         result = calculate_liquidated_damages(

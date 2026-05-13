@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.core.calendar_exporter import CalendarExportService, FORMAT_OPTIONS, THEME_OPTIONS
 from src.core.case_manager import (
     CORE_INFO_FIELD_DEFINITIONS,
     DEFAULT_INFO_SECTION_TITLES,
@@ -2187,21 +2188,71 @@ class CaseDetailPanel(QWidget):
         if not self._case_id or not self._case:
             return
 
-        default_name = f"{self._case.get('name', '案件')}_工作日志.md"
-        file_path, _ = QFileDialog.getSaveFileName(
+        deadlines = self._case.get("deadlines", [])
+        if not deadlines:
+            QMessageBox.information(self, "导出", "当前案件暂无期限事项。")
+            return
+
+        # 构建格式过滤器
+        filter_str = ";;".join(
+            f"{label} (*.{key if key != 'docx' else 'docx' if key != 'html' else 'html' if key != 'pdf' else 'pdf' if key != 'png' else 'png' if key != 'md' else 'md'})"
+            for key, label in FORMAT_OPTIONS
+        )
+        # 修正过滤器
+        ext_map = {
+            "pdf": "PDF 文档 (*.pdf)",
+            "docx": "Word 文档 (*.docx)",
+            "html": "HTML 网页 (*.html)",
+            "md": "Markdown 文档 (*.md)",
+            "png": "图片 PNG (*.png)",
+        }
+        filter_str = ";;".join(ext_map.values())
+
+        case_name = self._case.get("name", "案件")
+        default_name = f"{case_name}_期限日历"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "导出工作日志",
+            "导出期限事项",
             default_name,
-            "Markdown (*.md);;Text (*.txt)",
+            filter_str,
         )
         if not file_path:
             return
 
-        success = get_case_manager().export_case_work_log(self._case_id, Path(file_path))
-        if success:
-            QMessageBox.information(self, "导出成功", f"已导出到：{file_path}")
+        # 推断格式
+        export_format = "pdf"
+        lower_path = file_path.lower()
+        for key in ext_map:
+            if lower_path.endswith(f".{key}"):
+                export_format = key
+                break
         else:
-            QMessageBox.warning(self, "导出失败", "导出工作日志时出现问题。")
+            # 根据选择的过滤器推断
+            for key, label in ext_map.items():
+                if label == selected_filter:
+                    export_format = key
+                    break
+
+        output_path = Path(file_path)
+        if not output_path.suffix:
+            output_path = output_path.with_suffix(f".{export_format}")
+
+        try:
+            service = CalendarExportService()
+            service.export(
+                deadlines=deadlines,
+                output_path=output_path,
+                title=f"{case_name} — 期限事项",
+                period_label=f"案件：{case_name}",
+                summary_label=f"共 {len(deadlines)} 项期限",
+                filter_notes=["当前案件全部期限事项"],
+                export_format=export_format,
+                theme="stream",
+            )
+            QMessageBox.information(self, "导出成功", f"已导出到：{output_path}")
+        except Exception as exc:
+            self._logger.error(f"导出期限事项失败: {exc}")
+            QMessageBox.warning(self, "导出失败", f"导出期限事项时出现问题：{exc}")
 
     def _on_edit_deadline(self, deadline_id: str) -> None:
         if not self._case_id or not self._case:
@@ -3289,21 +3340,67 @@ class CaseDetailPanel(QWidget):
         if not self._case_id or not self._case:
             return
 
-        default_name = f"{self._case.get('name', '案件信息')}_信息.md"
-        file_path, _ = QFileDialog.getSaveFileName(
+        filters = [
+            ("Markdown 文档", "*.md"),
+            ("JSON 数据", "*.json"),
+            ("HTML 网页", "*.html"),
+            ("Word 文档", "*.docx"),
+        ]
+        filter_str = ";;".join(f"{label} ({ext})" for label, ext in filters)
+
+        default_name = f"{self._case.get('name', '案件信息')}_信息"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "导出案件信息",
             default_name,
-            "Markdown (*.md);;JSON (*.json)",
+            filter_str,
         )
         if not file_path:
             return
 
-        success = get_case_manager().export_case_info(self._case_id, Path(file_path))
-        if success:
-            QMessageBox.information(self, "导出成功", f"已导出到：{file_path}")
+        output_path = Path(file_path)
+        # 推断格式
+        fmt = "md"
+        lower_path = file_path.lower()
+        if lower_path.endswith(".json"):
+            fmt = "json"
+        elif lower_path.endswith(".html"):
+            fmt = "html"
+        elif lower_path.endswith(".docx"):
+            fmt = "docx"
         else:
-            QMessageBox.warning(self, "导出失败", "导出案件信息时出现问题。")
+            for label, ext in filters:
+                if f"{label} ({ext})" == selected_filter:
+                    fmt = ext.replace("*.", "")
+                    break
+
+        if not output_path.suffix:
+            output_path = output_path.with_suffix(f".{fmt}")
+
+        try:
+            if fmt == "json":
+                success = get_case_manager().export_case_info(self._case_id, output_path)
+                if not success:
+                    raise RuntimeError("导出失败")
+            elif fmt in {"html", "docx"}:
+                # 先获取 Markdown 内容，再转目标格式
+                md_text = get_case_manager()._build_markdown_export(
+                    get_case_manager().get_case(self._case_id) or {}
+                )
+                if fmt == "html":
+                    html_content = self._md_to_html(md_text, self._case.get("name", "案件信息"))
+                    output_path.write_text(html_content, encoding="utf-8")
+                else:
+                    self._md_to_docx(md_text, output_path, self._case.get("name", "案件信息"))
+            else:
+                success = get_case_manager().export_case_info(self._case_id, output_path)
+                if not success:
+                    raise RuntimeError("导出失败")
+
+            QMessageBox.information(self, "导出成功", f"已导出到：{output_path}")
+        except Exception as exc:
+            self._logger.error(f"导出案件信息失败: {exc}")
+            QMessageBox.warning(self, "导出失败", f"导出案件信息时出现问题：{exc}")
 
     def _on_toggle_info_field_tag(self, field_id: str) -> None:
         if not self._case_id or not field_id:
@@ -3465,3 +3562,132 @@ class CaseDetailPanel(QWidget):
             return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
         except (TypeError, ValueError):
             return ""
+
+    def _md_to_html(self, md_text: str, title: str = "导出") -> str:
+        """将 Markdown 文本转为简洁 HTML（供信息导出使用）。"""
+        from html import escape
+
+        lines = md_text.split("\n")
+        html_lines: List[str] = []
+        in_blockquote = False
+        in_ul = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("# "):
+                text = escape(stripped[2:])
+                html_lines.append(f'<h1 style="font-size:22px; font-weight:700; color:#1f2937; margin:0 0 12px 0;">{text}</h1>')
+            elif stripped.startswith("## "):
+                text = escape(stripped[3:])
+                html_lines.append(f'<h2 style="font-size:16px; font-weight:700; color:#374151; margin:16px 0 8px 0; border-bottom:1px solid #e5e7eb; padding-bottom:4px;">{text}</h2>')
+            elif stripped.startswith("### "):
+                text = escape(stripped[4:])
+                html_lines.append(f'<h3 style="font-size:14px; font-weight:600; color:#4b5563; margin:12px 0 6px 0;">{text}</h3>')
+            elif stripped.startswith("> "):
+                if not in_blockquote:
+                    html_lines.append('<blockquote style="margin:6px 0; padding:8px 12px; background:#f3f4f6; border-left:3px solid #d1d5db; color:#4b5563; font-size:13px;">')
+                    in_blockquote = True
+                html_lines.append(escape(stripped[2:]) + "<br>")
+            elif stripped.startswith("- "):
+                if not in_ul:
+                    html_lines.append('<ul style="margin:4px 0; padding-left:18px;">')
+                    in_ul = True
+                html_lines.append(f'<li style="margin:2px 0; font-size:13px; color:#374151;">{escape(stripped[2:])}</li>')
+            elif stripped == "---":
+                html_lines.append('<hr style="border:none; border-top:1px solid #e5e7eb; margin:12px 0;">')
+            elif stripped == "":
+                if in_blockquote:
+                    html_lines.append('</blockquote>')
+                    in_blockquote = False
+                if in_ul:
+                    html_lines.append('</ul>')
+                    in_ul = False
+                html_lines.append("<br>")
+            else:
+                if in_blockquote:
+                    html_lines.append('</blockquote>')
+                    in_blockquote = False
+                if in_ul:
+                    html_lines.append('</ul>')
+                    in_ul = False
+                html_lines.append(f'<p style="margin:4px 0; font-size:13px; color:#374151; line-height:1.6;">{escape(stripped)}</p>')
+
+        if in_blockquote:
+            html_lines.append('</blockquote>')
+        if in_ul:
+            html_lines.append('</ul>')
+
+        body = "\n".join(html_lines)
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{escape(title)}</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif; background:#f9fafb; padding:24px; max-width:720px; margin:0 auto; }}
+</style>
+</head>
+<body>
+<div style="background:#ffffff; border-radius:12px; padding:24px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+{body}
+</div>
+</body>
+</html>"""
+
+    def _md_to_docx(self, md_text: str, output_path: Path, title: str = "导出") -> None:
+        """将 Markdown 文本转为 Word 文档（供信息导出使用）。"""
+        from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Pt
+
+        document = Document()
+        style = document.styles["Normal"]
+        style.font.name = "Microsoft YaHei"
+        r_pr = style._element.get_or_add_rPr()
+        r_fonts = r_pr.rFonts
+        if r_fonts is None:
+            r_fonts = OxmlElement("w:rFonts")
+            r_pr.append(r_fonts)
+        r_fonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+        style.font.size = Pt(10.5)
+
+        title_p = document.add_paragraph()
+        title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title_p.add_run(title)
+        run.bold = True
+        run.font.size = Pt(18)
+
+        for raw_line in md_text.split("\n"):
+            stripped = raw_line.strip()
+            if stripped.startswith("# "):
+                p = document.add_paragraph()
+                r = p.add_run(stripped[2:])
+                r.bold = True
+                r.font.size = Pt(16)
+            elif stripped.startswith("## "):
+                p = document.add_paragraph()
+                r = p.add_run(stripped[3:])
+                r.bold = True
+                r.font.size = Pt(13)
+            elif stripped.startswith("### "):
+                p = document.add_paragraph()
+                r = p.add_run(stripped[4:])
+                r.bold = True
+                r.font.size = Pt(11.5)
+            elif stripped.startswith("> "):
+                p = document.add_paragraph()
+                p.paragraph_format.left_indent = Pt(12)
+                p.add_run(stripped[2:]).italic = True
+            elif stripped.startswith("- "):
+                p = document.add_paragraph(style="List Bullet")
+                p.add_run(stripped[2:])
+            elif stripped == "---":
+                document.add_paragraph("")
+            elif stripped == "":
+                continue
+            else:
+                document.add_paragraph(stripped)
+
+        document.save(str(output_path))

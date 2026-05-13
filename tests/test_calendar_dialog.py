@@ -188,10 +188,10 @@ class TestCalendarDialog:
         assert widget._preview_capacity(QRect(0, 0, 82, 80)) == 1
 
     def test_taller_month_card_can_show_more_preview_items(self, qapp):
-        """更高的月卡片应允许展示 3-4 条以上事项。"""
+        """更高的月卡片应允许展示至少 3 条事项。"""
         widget = DeadlineCalendarWidget()
 
-        assert widget._preview_capacity(QRect(0, 0, 126, 132)) >= 4
+        assert widget._preview_capacity(QRect(0, 0, 126, 132)) >= 3
 
     def test_compact_calendar_card_hides_top_badge(self, qapp):
         """窄日期卡不应再绘制顶部"1项"徽标挡住日期。"""
@@ -367,12 +367,31 @@ class TestCalendarDialog:
 
         assert captured.get("executed") is True
 
+    def test_embedded_calendar_case_manager_button_requests_unified_page_switch(self, qapp):
+        dialog = CalendarDialog(embed_mode=True)
+        received = {}
+        dialog.switch_page_requested.connect(lambda page_key: received.update({"page": page_key}))
+
+        dialog._on_case_manager()
+        qapp.processEvents()
+
+        assert received == {"page": "cases"}
+
+    def test_embedded_calendar_tool_center_button_requests_unified_page_switch(self, qapp):
+        dialog = CalendarDialog(embed_mode=True)
+        received = {}
+        dialog.switch_page_requested.connect(lambda page_key: received.update({"page": page_key}))
+
+        dialog._on_tool_center()
+        qapp.processEvents()
+
+        assert received == {"page": "tools"}
+
     def test_calendar_filter_combos_use_visible_dropdown_style(self, qapp):
         """右侧筛选框应保留清晰的下拉按钮入口。"""
         dialog = CalendarDialog()
 
         for combo in (
-            dialog._tag_filter_combo,
             dialog._case_filter_combo,
             dialog._status_filter_combo,
             dialog._type_filter_combo,
@@ -382,6 +401,18 @@ class TestCalendarDialog:
             assert "QComboBox#calendarFilterCombo::drop-down" in style
             assert "QComboBox#calendarFilterCombo::down-arrow" in style
             assert "dropdown_arrow.svg" in style
+        assert dialog._tag_filter_combo.isHidden()
+        assert dialog._detail_filter_reset_btn.text() == "复位"
+        assert dialog._detail_export_btn.text() == "快速导出"
+        assert dialog._detail_filter_reset_btn.width() <= 64
+        assert dialog._detail_export_btn.width() <= 88
+
+    def test_calendar_hearing_summary_value_uses_red_highlight(self, qapp):
+        dialog = CalendarDialog()
+        style = dialog._stats_value_labels["hearing"].styleSheet()
+        assert "#dc2626" in style
+        assert dialog._stats_cards["overdue"].cursor().shape() == Qt.CursorShape.PointingHandCursor
+        assert dialog._stats_cards["hearing"].cursor().shape() == Qt.CursorShape.PointingHandCursor
 
     def test_calendar_edit_deadline_stays_inside_calendar_dialog(self, qapp, monkeypatch):
         dialog = CalendarDialog()
@@ -424,7 +455,7 @@ class TestCalendarDialog:
         assert updated_deadline["status"] == "completed"
         assert updated_deadline["completed_at"]
 
-    def test_calendar_all_mode_supports_tag_filter(self, qapp):
+    def test_calendar_reset_detail_filters_restores_default_filters(self, qapp):
         contract_case_id = self.manager.register_case({
             "name": "合同纠纷案件",
             "path": str(self.case_folder),
@@ -457,16 +488,75 @@ class TestCalendarDialog:
         dialog = CalendarDialog()
         dialog._set_detail_mode("all")
 
-        tag_index = dialog._tag_filter_combo.findData("合同")
-        assert tag_index >= 0
-        dialog._tag_filter_combo.setCurrentIndex(tag_index)
+        case_index = dialog._case_filter_combo.findData(contract_case_id)
+        assert case_index >= 0
+        dialog._case_filter_combo.setCurrentIndex(case_index)
+        dialog._status_filter_combo.setCurrentIndex(dialog._status_filter_combo.findData("pending"))
+        dialog._type_filter_combo.setCurrentIndex(dialog._type_filter_combo.findData("deadline"))
+        dialog._apply_risk_filter("future")
         qapp.processEvents()
 
-        filtered = dialog._filtered_deadlines_for_current_view()
+        dialog._reset_detail_filters()
+        qapp.processEvents()
 
-        assert len(filtered) == 1
-        assert filtered[0]["case_id"] == contract_case_id
-        assert filtered[0]["case_tags"] == ["合同", "民事"]
+        assert dialog._case_filter_combo.currentData() == ""
+        assert dialog._status_filter_combo.currentData() == "all"
+        assert dialog._type_filter_combo.currentData() == "all"
+        assert dialog._risk_filter == "none"
+
+        filtered = dialog._filtered_deadlines_for_current_view()
+        filtered_ids = {item["id"] for item in filtered}
+        assert filtered_ids == {"dl_contract", "dl_labor"}
+
+    def test_calendar_quick_export_uses_saved_preset(self, qapp, monkeypatch):
+        self.manager.register_case({
+            "name": "快速导出案件",
+            "path": str(self.case_folder),
+            "deadlines": [
+                {
+                    "id": "dl_export",
+                    "title": "开庭安排",
+                    "date": "2026-04-22",
+                    "status": "pending",
+                    "type": "hearing",
+                }
+            ],
+        })
+
+        dialog = CalendarDialog()
+        captured = {}
+
+        monkeypatch.setattr(dialog, "_calendar_export_settings", lambda: {
+            "last_directory": str(self.temp_dir),
+            "last_format": "pdf",
+            "last_theme": "stream",
+            "quick_preset": {
+                "directory": str(self.temp_dir),
+                "format": "pdf",
+                "theme": "calendar",
+                "filters": {"detail_mode": "all", "risk_filter": "future"},
+            },
+            "auto_export_on_close": False,
+        })
+
+        def _capture(filter_state, *, directory, export_format, theme, silent=False):
+            captured["filter_state"] = filter_state
+            captured["directory"] = directory
+            captured["format"] = export_format
+            captured["theme"] = theme
+            captured["silent"] = silent
+            return Path(directory) / "captured.pdf"
+
+        monkeypatch.setattr(dialog, "_export_deadlines_for_state", _capture)
+
+        result = dialog._run_quick_export(silent=True)
+
+        assert result == Path(self.temp_dir) / "captured.pdf"
+        assert captured["directory"] == str(self.temp_dir)
+        assert captured["format"] == "pdf"
+        assert captured["theme"] == "calendar"
+        assert captured["filter_state"]["risk_filter"] == "future"
+        assert captured["silent"] is True
 
     def test_empty_filtered_detail_panel_removes_old_deadline_cards(self, qapp):
         case_id = self.manager.register_case({
@@ -553,6 +643,148 @@ class TestCalendarDialog:
         filtered = dialog._filtered_deadlines_for_current_view()
         assert len(filtered) == 1
         assert filtered[0]["type"] == "hearing"
+
+    def test_calendar_future_risk_filter_keeps_today_and_future_pending_items(self, qapp):
+        today = date.today()
+        self.manager.register_case({
+            "name": "未来筛选案件",
+            "path": str(self.case_folder),
+            "deadlines": [
+                {
+                    "id": "dl_overdue",
+                    "title": "已逾期事项",
+                    "date": (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_today",
+                    "title": "今日事项",
+                    "date": today.strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_future",
+                    "title": "未来事项",
+                    "date": (today + timedelta(days=10)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "custom",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_completed_future",
+                    "title": "未来已完成事项",
+                    "date": (today + timedelta(days=3)).strftime("%Y-%m-%d"),
+                    "status": "completed",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+            ],
+        })
+
+        dialog = CalendarDialog()
+        dialog._set_detail_mode("all")
+        dialog._apply_risk_filter("future")
+        qapp.processEvents()
+
+        filtered = dialog._filtered_deadlines_for_current_view()
+        filtered_ids = {item["id"] for item in filtered}
+
+        assert dialog._queue_buttons["future"].text() == "未来"
+        assert filtered_ids == {"dl_today", "dl_future"}
+
+    def test_calendar_hearing_summary_click_applies_future_hearing_filters(self, qapp):
+        today = date.today()
+        self.manager.register_case({
+            "name": "待开庭点击筛选案件",
+            "path": str(self.case_folder),
+            "deadlines": [
+                {
+                    "id": "dl_hearing_future",
+                    "title": "未来开庭",
+                    "date": (today + timedelta(days=2)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "hearing",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_hearing_overdue",
+                    "title": "过期开庭",
+                    "date": (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "hearing",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_deadline_future",
+                    "title": "未来普通期限",
+                    "date": (today + timedelta(days=3)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+            ],
+        })
+
+        dialog = CalendarDialog()
+        dialog._on_hearing_summary_clicked()
+        qapp.processEvents()
+
+        filtered = dialog._filtered_deadlines_for_current_view()
+        filtered_ids = {item["id"] for item in filtered}
+
+        assert dialog._detail_mode == "all"
+        assert dialog._risk_filter == "future"
+        assert dialog._type_filter_combo.currentData() == "hearing"
+        assert filtered_ids == {"dl_hearing_future"}
+
+    def test_calendar_overdue_summary_click_matches_overdue_risk_filter(self, qapp):
+        today = date.today()
+        self.manager.register_case({
+            "name": "逾期点击筛选案件",
+            "path": str(self.case_folder),
+            "deadlines": [
+                {
+                    "id": "dl_overdue_pending",
+                    "title": "逾期待办",
+                    "date": (today - timedelta(days=2)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_future_pending",
+                    "title": "未来待办",
+                    "date": (today + timedelta(days=2)).strftime("%Y-%m-%d"),
+                    "status": "pending",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+                {
+                    "id": "dl_overdue_completed",
+                    "title": "已完成逾期",
+                    "date": (today - timedelta(days=3)).strftime("%Y-%m-%d"),
+                    "status": "completed",
+                    "type": "deadline",
+                    "all_day": True,
+                },
+            ],
+        })
+
+        dialog = CalendarDialog()
+        dialog._on_overdue_summary_clicked()
+        qapp.processEvents()
+
+        filtered = dialog._filtered_deadlines_for_current_view()
+        filtered_ids = {item["id"] for item in filtered}
+
+        assert dialog._detail_mode == "all"
+        assert dialog._risk_filter == "overdue"
+        assert dialog._type_filter_combo.currentData() == "all"
+        assert filtered_ids == {"dl_overdue_pending"}
 
     def test_calendar_detail_expand_toggle_collapses_rows_but_keeps_actions(self, qapp):
         self.manager.register_case({

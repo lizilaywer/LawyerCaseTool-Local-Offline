@@ -6,7 +6,7 @@ from pathlib import Path
 from src.utils.platform_utils import is_windows
 
 # 勾选图标路径（供 QCheckBox::indicator:checked 使用）
-CHECK_ICON_PATH = str(Path(__file__).parent.parent.parent / "resources" / "icons" / "check.svg")
+CHECK_ICON_PATH = (Path(__file__).parent.parent.parent / "resources" / "icons" / "check.svg").as_posix()
 
 APP_COLORS = {
     # Surface backgrounds

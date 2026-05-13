@@ -17,7 +17,7 @@ class TestToolCenterDialog:
         dialog.show()
         qapp.processEvents()
 
-        assert dialog._tabs.count() == 7
+        assert dialog._tabs.count() == 9
 
         dialog._litigation_amount.setValue(100000)
         dialog._litigation_type.setCurrentIndex(0)

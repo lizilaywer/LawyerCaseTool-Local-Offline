@@ -143,13 +143,14 @@ class TestCaseManager:
         assert self.manager.export_case_work_log(case_id, output_path) is True
 
         text = output_path.read_text(encoding="utf-8")
-        assert "# 工作日志案件 工作日志" in text
-        assert "## 一、待处理事项" in text
-        assert "## 二、已完成事项" in text
-        assert "事项：提交证据" in text
-        assert "事项：开庭" in text
-        assert "状态：待处理" in text
-        assert "状态：已完成" in text
+        assert "工作日志案件" in text
+        assert "工作日志" in text
+        assert "⏳ 待处理事项" in text
+        assert "✅ 已完成事项" in text
+        assert "提交证据" in text
+        assert "开庭" in text
+        assert "待处理" in text
+        assert "已完成" in text
 
     def test_get_all_cases_does_not_refresh_disk_status_by_default(self):
         """列表读取默认不做磁盘核验，避免打开案件管理时卡顿。"""

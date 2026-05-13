@@ -330,7 +330,7 @@ class MainWindow(QMainWindow):
         self._dashboard.new_case_requested.connect(self._on_new_case)
         self._dashboard.navigate_to_documents_requested.connect(lambda: self._switch_page("documents"))
         self._dashboard.navigate_to_cases_requested.connect(lambda: self._switch_page("cases"))
-        self._dashboard.navigate_to_calendar_requested.connect(lambda: self._switch_page("calendar"))
+        self._dashboard.navigate_to_calendar_requested.connect(self._on_navigate_to_calendar_from_dashboard)
         self._dashboard.open_case_deadline_requested.connect(self._on_open_case_deadline)
         self._dashboard.filter_cases_by_status_requested.connect(self._on_filter_by_status)
         self._dashboard.filter_cases_by_category_requested.connect(self._on_filter_by_category)
@@ -355,6 +355,7 @@ class MainWindow(QMainWindow):
         from src.gui.calendar_dialog import CalendarDialog
         self._calendar_page = CalendarDialog(parent=self._stack, embed_mode=True)
         self._calendar_page.setStyleSheet(f"QDialog {{ background: {c['surface_1']}; border: none; }}")
+        self._calendar_page.switch_page_requested.connect(self._switch_page)
         self._stack.addWidget(self._calendar_page)
 
         # 页面 4: 工具中心（内嵌模式）
@@ -1797,6 +1798,12 @@ class MainWindow(QMainWindow):
         if idx is not None and hasattr(self._tool_center_page, "_tabs"):
             self._tool_center_page._tabs.setCurrentIndex(idx)
 
+    def _on_navigate_to_calendar_from_dashboard(self, filter_key: str = "") -> None:
+        """工作台跳转日历：切换页面并应用对应风险筛选。"""
+        self._switch_page("calendar")
+        if filter_key and hasattr(self._calendar_page, "_apply_risk_filter"):
+            self._calendar_page._apply_risk_filter(filter_key)
+
     def _on_navigate_to_calendar_from_tool(self, date_text: str = "") -> None:
         """工具中心跳转日历：切换页面并尝试定位到指定日期。"""
         self._switch_page("calendar")
@@ -2399,6 +2406,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """关闭事件"""
+        if hasattr(self, "_calendar_page") and hasattr(self._calendar_page, "perform_auto_export_on_close"):
+            try:
+                self._calendar_page.perform_auto_export_on_close(silent=True)
+            except Exception as exc:
+                self._logger.warning(f"关闭时自动导出期限事项失败: {exc}")
+
         # 保存窗口几何信息
         self._config_manager.set("ui.window_width", self.width())
         self._config_manager.set("ui.window_height", self.height())
