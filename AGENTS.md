@@ -512,4 +512,4 @@ manager.clear_cache()
 
 ## 许可证
 
-MIT License
+GNU General Public License v3.0 (GPL-3.0)
