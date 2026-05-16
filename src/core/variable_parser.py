@@ -33,7 +33,7 @@ class VariableParser:
         Returns:
             变量名列表
         """
-        return list(set(self.VARIABLE_PATTERN.findall(text)))
+        return sorted(set(self.VARIABLE_PATTERN.findall(text)))
 
     def extract_from_structure(self, structure: Dict[str, Any]) -> List[str]:
         """
@@ -61,7 +61,7 @@ class VariableParser:
                     extract_from_dict(value)
 
         extract_from_dict(structure)
-        return list(variables)
+        return sorted(variables)
 
     def replace_variables(
         self,

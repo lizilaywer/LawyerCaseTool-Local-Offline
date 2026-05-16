@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -313,31 +314,31 @@ class CaseManager:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+                    instance = super().__new__(cls)
+                    # 在锁内完成全部初始化，消除竞态窗口
+                    instance._logger = get_logger()
+                    instance._cases_file = get_path_manager().cases_file
+                    instance._cases: Dict[str, Dict[str, Any]] = {}
+                    instance._global_deadlines: List[Dict[str, Any]] = []
+                    instance._common_tags: List[str] = []
+                    instance._last_refresh_time: float = 0.0  # 上次全量刷新时间戳
+                    instance._instance_lock = threading.RLock()
+                    # 批量更新模式
+                    instance._batch_mode = False
+                    instance._batch_changed: Set[str] = set()
+                    # 性能优化索引
+                    instance._path_index: Dict[str, str] = {}  # normalized_path -> case_id
+                    instance._history_index: Dict[str, str] = {}  # normalized_history_path -> case_id
+                    instance._search_index: Dict[str, str] = {}  # case_id -> flattened search text
+                    instance._sorted_case_ids: OrderedDict = OrderedDict()  # 按 updated_at 降序排序的 case_id
+                    instance._load()
+                    instance._initialized = True  # 最后标记，确保初始化完成后才对外可见
+                    cls._instance = instance
         return cls._instance
 
     def __init__(self):
-        with self.__class__._lock:
-            if self._initialized:
-                return
-            self._initialized = True
-        self._logger = get_logger()
-        self._cases_file = get_path_manager().cases_file
-        self._cases: Dict[str, Dict[str, Any]] = {}
-        self._global_deadlines: List[Dict[str, Any]] = []
-        self._common_tags: List[str] = []
-        self._last_refresh_time: float = 0.0  # 上次全量刷新时间戳
-        self._lock = threading.RLock()
-        # 批量更新模式
-        self._batch_mode = False
-        self._batch_changed: Set[str] = set()
-        # 性能优化索引
-        self._path_index: Dict[str, str] = {}  # normalized_path -> case_id
-        self._history_index: Dict[str, str] = {}  # normalized_history_path -> case_id
-        self._search_index: Dict[str, str] = {}  # case_id -> flattened search text
-        self._sorted_case_ids: List[str] = []  # 按 updated_at 降序排序的 case_id 列表
-        self._load()
+        # 所有初始化已在 __new__ 中完成，无需重复
+        pass
 
     def _load(self) -> None:
         """从 cases.json 加载。"""
@@ -410,12 +411,13 @@ class CaseManager:
         self._rebuild_sorted_ids()
 
     def _rebuild_sorted_ids(self) -> None:
-        """重建按 updated_at 降序排序的 case_id 列表。"""
-        self._sorted_case_ids = sorted(
+        """重建按 updated_at 降序排序的 case_id 有序字典。"""
+        sorted_ids = sorted(
             self._cases.keys(),
             key=lambda cid: self._cases[cid].get("updated_at", ""),
             reverse=True,
         )
+        self._sorted_case_ids = OrderedDict((cid, None) for cid in sorted_ids)
 
     @staticmethod
     def _build_search_text(case: Dict[str, Any]) -> str:
@@ -453,19 +455,21 @@ class CaseManager:
         self._search_index[case_id] = self._build_search_text(case)
         # 排序缓存：移到队首（最新更新）
         if case_id in self._sorted_case_ids:
-            self._sorted_case_ids.remove(case_id)
-        self._sorted_case_ids.insert(0, case_id)
+            self._sorted_case_ids.move_to_end(case_id, last=False)
+        else:
+            self._sorted_case_ids[case_id] = None
+            self._sorted_case_ids.move_to_end(case_id, last=False)
 
     @contextlib.contextmanager
     def batch_update(self):
         """批量更新上下文管理器。退出时统一保存一次。"""
-        with self._lock:
+        with self._instance_lock:
             self._batch_mode = True
             self._batch_changed.clear()
         try:
             yield self
         finally:
-            with self._lock:
+            with self._instance_lock:
                 self._batch_mode = False
                 changed = bool(self._batch_changed)
                 self._batch_changed.clear()
@@ -820,7 +824,7 @@ class CaseManager:
                 del self._history_index[hist_norm]
         self._search_index.pop(case_id, None)
         if case_id in self._sorted_case_ids:
-            self._sorted_case_ids.remove(case_id)
+            del self._sorted_case_ids[case_id]
         del self._cases[case_id]
         return self.save()
 
@@ -926,18 +930,21 @@ class CaseManager:
         return self.update_case(case_id, {"name": target_name})
 
     def get_case(self, case_id: str) -> Optional[Dict[str, Any]]:
-        """获取单个案件。"""
-        with self._lock:
+        """获取单个案件。带 30 秒节流，避免频繁磁盘 I/O。"""
+        with self._instance_lock:
             if case_id not in self._cases:
                 return None
-        self._refresh_case_runtime_state_light(case_id)
-        with self._lock:
+        # 节流：仅在距上次全量刷新超过 30 秒时才刷新运行时状态
+        now = time.time()
+        if now - self._last_refresh_time > 30:
+            self._refresh_case_runtime_state_light(case_id)
+        with self._instance_lock:
             return self._cases.get(case_id)
 
     def get_case_by_path(self, folder_path: str) -> Optional[Dict[str, Any]]:
         """根据文件夹路径查找案件。"""
         normalized = str(folder_path).replace("\\", "/").rstrip("/")
-        with self._lock:
+        with self._instance_lock:
             case_id = self._path_index.get(normalized)
             if case_id:
                 return self._cases.get(case_id)
@@ -956,7 +963,7 @@ class CaseManager:
                 self.refresh_all_runtime_states()
                 self._last_refresh_time = now
 
-        with self._lock:
+        with self._instance_lock:
             return [self._cases[cid] for cid in self._sorted_case_ids if cid in self._cases]
 
     def refresh_all_runtime_states(self, include_notes: bool = False) -> bool:
@@ -1002,7 +1009,7 @@ class CaseManager:
             return self.get_all_cases()
 
         kw = keyword.lower()
-        with self._lock:
+        with self._instance_lock:
             results = []
             for case_id in self._sorted_case_ids:
                 case = self._cases.get(case_id)

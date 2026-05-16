@@ -98,31 +98,31 @@ class ConfigManager:
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
-                # 双重检查锁定模式
+                # 双重检查锁定模式，在锁内完成全部初始化消除竞态窗口
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+                    instance = super().__new__(cls)
+                    instance._path_manager = get_path_manager()
+                    instance._logger = get_logger()
+
+                    # 应用配置
+                    instance._config: Dict[str, Any] = {}
+                    # 模板配置
+                    instance._templates: List[Dict[str, Any]] = []
+
+                    # 批量更新模式标志
+                    instance._batch_mode: bool = False
+                    instance._batch_dirty: bool = False
+
+                    # 初始化
+                    instance._init_config()
+
+                    instance._initialized = True  # 最后标记
+                    cls._instance = instance
         return cls._instance
 
     def __init__(self):
-        if self._initialized:
-            return
-        self._initialized = True
-
-        self._path_manager = get_path_manager()
-        self._logger = get_logger()
-
-        # 应用配置
-        self._config: Dict[str, Any] = {}
-        # 模板配置
-        self._templates: List[Dict[str, Any]] = []
-
-        # 批量更新模式标志
-        self._batch_mode: bool = False
-        self._batch_dirty: bool = False
-
-        # 初始化
-        self._init_config()
+        # 所有初始化已在 __new__ 中完成，无需重复
+        pass
 
     def _init_config(self) -> None:
         """初始化配置"""

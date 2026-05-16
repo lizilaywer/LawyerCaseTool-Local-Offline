@@ -193,6 +193,7 @@ class BatchProcessor:
         from src.core.template_engine import TemplateEngine
 
         folder_generator = FolderGenerator()
+        folder_generator.set_cancel_checker(self.is_cancelled)
         template_engine = TemplateEngine()
         parser = VariableParser()
 
@@ -296,7 +297,7 @@ class BatchProcessor:
             ]
 
         if max_workers is None:
-            max_workers = min(8, (os.cpu_count() or 4) + 2)
+            max_workers = min(4, (os.cpu_count() or 2))
 
         results: List[Optional[Dict[str, Any]]] = [None] * total
         progress_lock = threading.Lock()

@@ -2,6 +2,7 @@
 """数据迁移工具模块"""
 
 from typing import Any, Dict, List
+from copy import deepcopy
 from src.utils.logger import get_logger
 
 
@@ -33,7 +34,7 @@ def migrate_template_structure(template: Dict[str, Any]) -> Dict[str, Any]:
         新版本模板配置
     """
     logger = get_logger()
-    template = template.copy()
+    template = deepcopy(template)
     folder_structure = template.get("folder_structure", {})
     folders = folder_structure.get("folders", [])
 
@@ -41,7 +42,7 @@ def migrate_template_structure(template: Dict[str, Any]) -> Dict[str, Any]:
     new_folders = []
 
     for folder in folders:
-        new_folder = folder.copy()
+        new_folder = deepcopy(folder)
         subfolders = folder.get("subfolders", [])
 
         # 检查是否需要迁移
@@ -148,7 +149,7 @@ def migrate_template_paths(template: Dict[str, Any]) -> Dict[str, Any]:
         迁移后的模板配置
     """
     logger = get_logger()
-    template = template.copy()
+    template = deepcopy(template)
     folders = template.get("folder_structure", {}).get("folders", [])
 
     migrated = False

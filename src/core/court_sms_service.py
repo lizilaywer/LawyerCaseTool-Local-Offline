@@ -23,6 +23,9 @@ from src.config.path_manager import get_path_manager
 from src.utils.logger import get_logger
 from src.utils.validators import sanitize_filename
 
+# 下载文件最大大小限制（100MB）
+_MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024
+
 try:
     from pypdf import PdfReader
 except ImportError:
@@ -432,7 +435,7 @@ class CourtSmsService:
             "User-Agent": "LEXORA/1.0",
         }
 
-        response = self._session.post(url, json=payload, headers=headers, timeout=timeout)
+        response = self._session.post(url, json=payload, headers=headers, timeout=timeout, verify=True)
         response.raise_for_status()
 
         try:
@@ -512,12 +515,17 @@ class CourtSmsService:
             "User-Agent": "LEXORA/1.0",
         }
         with self._session.get(
-            document.download_url, headers=headers, stream=True, timeout=timeout
+            document.download_url, headers=headers, stream=True, timeout=timeout, verify=True
         ) as response:
             response.raise_for_status()
+            total = 0
             with open(target_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
+                        total += len(chunk)
+                        if total > _MAX_DOWNLOAD_SIZE:
+                            target_path.unlink(missing_ok=True)
+                            raise ValueError(f"文件大小超出限制({_MAX_DOWNLOAD_SIZE // 1024 // 1024}MB)")
                         f.write(chunk)
         document.local_path = str(target_path)
         document.size_bytes = target_path.stat().st_size
@@ -665,8 +673,10 @@ class CourtSmsService:
         if fitz is not None and allow_pymupdf_fallback:
             try:
                 doc = fitz.open(str(path))
-                text = "\n".join(page.get_text() or "" for page in doc)
-                doc.close()
+                try:
+                    text = "\n".join(page.get_text() or "" for page in doc)
+                finally:
+                    doc.close()
                 return text
             except Exception as exc:
                 self._logger.warning(f"PyMuPDF 提取 PDF 文本失败: {path} | {exc}")
@@ -731,19 +741,21 @@ class CourtSmsService:
             import tempfile
             texts = []
             doc = fitz.open(str(pdf_path))
-            for page in doc:
-                pix = page.get_pixmap(dpi=200)
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                    tmp = f.name
-                pix.save(tmp)
-                try:
-                    results = engine.recognize(tmp)
-                    page_text = "\n".join(block.text for block in results if block.text)
-                    if page_text:
-                        texts.append(page_text)
-                finally:
-                    Path(tmp).unlink(missing_ok=True)
-            doc.close()
+            try:
+                for page in doc:
+                    pix = page.get_pixmap(dpi=200)
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                        tmp = f.name
+                    pix.save(tmp)
+                    try:
+                        results = engine.recognize(tmp)
+                        page_text = "\n".join(block.text for block in results if block.text)
+                        if page_text:
+                            texts.append(page_text)
+                    finally:
+                        Path(tmp).unlink(missing_ok=True)
+            finally:
+                doc.close()
             return "\n".join(texts)
         except Exception as exc:
             self._logger.warning(f"PDF OCR 回退失败: {pdf_path} | {exc}")

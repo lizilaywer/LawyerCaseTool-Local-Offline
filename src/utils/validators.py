@@ -5,6 +5,9 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
+# 预编译：Windows 文件名非法字符 + 中文全角引号 \u201c(") \u201d(")
+_SANITIZE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\u201c\u201d]')
+
 
 class Validator:
     """数据验证器基类"""
@@ -155,9 +158,8 @@ def sanitize_filename(filename: str, strip_ui_markers: bool = True) -> str:
     if strip_ui_markers:
         filename = filename.replace(" ✓", "").replace(" 📎", "")
 
-    # Windows 文件名非法字符 + 中文引号
-    illegal_chars = r'[<>:"/\\|?*""]'  # 添加了中文引号 " 和 "
-    return re.sub(illegal_chars, '_', filename)
+    # Windows 文件名非法字符 + 中文引号（使用预编译正则）
+    return _SANITIZE_FILENAME_RE.sub('_', filename)
 
 
 def validate_folder_name(name: str) -> Tuple[bool, str]:

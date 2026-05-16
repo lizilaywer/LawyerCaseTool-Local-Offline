@@ -2,10 +2,13 @@
 """Word模板处理引擎模块"""
 
 import hashlib
+import io
 import os
+import re
+import shutil
 import threading
 import time
-import io
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -22,11 +25,13 @@ class TemplateEngine:
 
     # 缓存过期时间（秒）
     CACHE_TTL = 300  # 5分钟
+    # 缓存最大条目数
+    CACHE_MAXSIZE = 50
 
     def __init__(self):
         self._logger = get_logger()
-        # 模板字节缓存: {path_str: (bytes_data, file_mtime, cache_time)}
-        self._cache: Dict[str, Tuple[bytes, float, float]] = {}
+        # 模板字节缓存: {path_str: (bytes_data, file_mtime, cache_time)}，LRU 淘汰
+        self._cache: OrderedDict[str, Tuple[bytes, float, float]] = OrderedDict()
         self._cache_lock = threading.Lock()
 
     def _get_cache_key(self, template_path: Path) -> str:
@@ -55,6 +60,8 @@ class TemplateEngine:
         if time.time() - cache_time > self.CACHE_TTL:
             return False
 
+        # LRU: 访问时移到末尾
+        self._cache.move_to_end(cache_key)
         return True
 
     def _get_cached_template(self, template_path: Path) -> Optional[bytes]:
@@ -69,12 +76,17 @@ class TemplateEngine:
         return None
 
     def _cache_template(self, template_path: Path, template_bytes: bytes) -> None:
-        """缓存模板字节"""
+        """缓存模板字节，LRU 淘汰超限条目"""
         cache_key = self._get_cache_key(template_path)
         current_mtime = self._get_file_mtime(template_path)
 
         with self._cache_lock:
             self._cache[cache_key] = (template_bytes, current_mtime, time.time())
+            # LRU: 移到末尾（最近使用）
+            self._cache.move_to_end(cache_key)
+            # 淘汰最久未使用的条目
+            while len(self._cache) > self.CACHE_MAXSIZE:
+                self._cache.popitem(last=False)
             self._logger.debug(f"模板已缓存: {template_path.name}")
 
     def clear_cache(self) -> None:
@@ -108,8 +120,6 @@ class TemplateEngine:
         except ImportError:
             self._logger.error("docxtpl 未安装")
             raise TemplateError("请安装 docxtpl: pip install docxtpl")
-
-        import io
 
         # 检查模板文件
         if not template_path.exists():
@@ -232,7 +242,6 @@ class TemplateEngine:
             self._logger.error(f"加载模板失败: {e}")
             return []
 
-        import re
         # 匹配 {{variable_name}} 格式，变量名为字母、数字、下划线
         pattern = re.compile(r'\{\{(\w+)\}\}')
 
@@ -304,8 +313,6 @@ class TemplateEngine:
         Returns:
             输出文件路径
         """
-        import shutil
-
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(template_path, output_path)
 

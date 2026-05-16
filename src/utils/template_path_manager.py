@@ -98,10 +98,10 @@ class TemplatePathManager:
             self._logger.warning(f"绝对路径不在允许的目录内: {relative_path}")
             return None
 
-        # 安全检查：防止路径遍历攻击
+        # 安全检查：防止路径遍历攻击（统一使用 resolve().relative_to() 验证）
         normalized = raw_path.replace('\\', '/')
-        relative_parts = Path(normalized).parts
-        if ".." in relative_parts or normalized.startswith('\\') or normalized.startswith('//'):
+        # 快速检查 .. 序列（仅作预检，最终安全验证由 resolve().relative_to() 保证）
+        if ".." in Path(normalized).parts:
             self._logger.warning(f"检测到可疑的模板路径: {relative_path}")
             return None
         relative_path = normalized

@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from src.utils.logger import get_logger
 
@@ -102,8 +102,9 @@ def delete_dir(path: Path) -> bool:
 def list_files(
     directory: Path,
     pattern: str = "*",
-    recursive: bool = False
-) -> List[Path]:
+    recursive: bool = False,
+    limit: Optional[int] = None
+) -> Iterator[Path]:
     """
     列出目录中的文件
 
@@ -111,13 +112,24 @@ def list_files(
         directory: 目录路径
         pattern: 文件模式
         recursive: 是否递归
+        limit: 最大返回数量，None 表示不限
 
     Returns:
-        文件路径列表
+        文件路径迭代器
     """
+    count = 0
     if recursive:
-        return list(directory.rglob(pattern))
-    return list(directory.glob(pattern))
+        for path in directory.rglob(pattern):
+            yield path
+            count += 1
+            if limit and count >= limit:
+                return
+    else:
+        for path in directory.glob(pattern):
+            yield path
+            count += 1
+            if limit and count >= limit:
+                return
 
 
 def get_file_size(path: Path) -> int:
